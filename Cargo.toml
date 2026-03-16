@@ -215,7 +215,9 @@ landlock = { version = "0.4", optional = true }
 libc = "0.2"
 
 [features]
-default = ["observability-prometheus", "channel-nostr"]
+default = ["observability-prometheus", "channel-nostr", "skills", "pipeline"]
+skills = []
+pipeline = []
 channel-nostr = ["dep:nostr-sdk"]
 hardware = ["nusb", "tokio-serial"]
 channel-matrix = ["dep:matrix-sdk"]

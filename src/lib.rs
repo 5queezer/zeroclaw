@@ -240,6 +240,11 @@ Examples:
 pub enum SkillCommands {
     /// List all installed skills
     List,
+    /// Show details of an installed skill by slug
+    Show {
+        /// Skill slug to display
+        slug: String,
+    },
     /// Audit a skill source directory or installed skill name
     Audit {
         /// Skill path or installed skill name
