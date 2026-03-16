@@ -13,7 +13,7 @@ use anyhow::{bail, Result};
 use regex::Regex;
 use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tracing::warn;
 
 /// Represents a single agent turn for skill creation analysis.
@@ -307,8 +307,9 @@ pub fn validate_slug(raw: &str) -> Result<String> {
 
     let slug = raw.to_ascii_lowercase().trim().to_string();
 
-    // Use a lazy static-like approach
-    let re = Regex::new(r"^[a-z0-9_-]{1,64}$").expect("slug regex is valid");
+    static SLUG_RE: OnceLock<Regex> = OnceLock::new();
+    let re =
+        SLUG_RE.get_or_init(|| Regex::new(r"^[a-z0-9_-]{1,64}$").expect("slug regex is valid"));
     if !re.is_match(&slug) {
         bail!(
             "slug '{}' does not match allowlist pattern ^[a-z0-9_-]{{1,64}}$",

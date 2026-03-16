@@ -9,7 +9,7 @@
 use anyhow::{bail, Result};
 use std::path::{Path, PathBuf};
 
-use super::autonomous::SkillIndex;
+use super::autonomous::{validate_slug, SkillIndex};
 
 /// Configuration for skill improvement.
 #[derive(Debug, Clone)]
@@ -60,14 +60,13 @@ pub fn ensure_audit_fields(content: &str, reason: &str) -> Result<String> {
     let now = chrono::Utc::now().to_rfc3339();
     let trimmed = content.trim();
 
-    if !trimmed.starts_with("+++") {
+    let Some(rest) = trimmed.strip_prefix("+++") else {
         // No front-matter; prepend one with audit fields
         let front_matter =
             format!("+++\nupdated_at = \"{now}\"\nimprovement_reason = \"{reason}\"\n+++\n");
         return Ok(format!("{front_matter}{content}"));
-    }
+    };
 
-    let rest = &trimmed[3..];
     let Some(end_pos) = rest.find("+++") else {
         bail!("malformed front-matter: missing closing +++");
     };
@@ -126,12 +125,15 @@ pub fn improve_skill(
     index: &SkillIndex,
     config: &SkillImprovementConfig,
 ) -> Result<Option<PathBuf>> {
+    // S1.1: Validate slug to prevent path traversal in temp/skill file names
+    let validated_slug = validate_slug(slug)?;
+
     // S2.2: Cooldown check
-    if is_within_cooldown(index, slug, config.cooldown_secs)? {
+    if is_within_cooldown(index, &validated_slug, config.cooldown_secs)? {
         return Ok(None);
     }
 
-    let skill_path = skills_dir.join(format!("{slug}.md"));
+    let skill_path = skills_dir.join(format!("{validated_slug}.md"));
 
     // Validate the new content is proper UTF-8 (caller provides &str, so this is guaranteed)
     // But check for well-formed front-matter
@@ -147,7 +149,7 @@ pub fn improve_skill(
     validate_skill_content(&audited_content)?;
 
     // S2.1: Atomic write — temp file → validate → rename
-    let temp_path = skills_dir.join(format!(".{slug}.md.tmp"));
+    let temp_path = skills_dir.join(format!(".{validated_slug}.md.tmp"));
 
     // Write to temp file
     if let Err(e) = std::fs::write(&temp_path, &audited_content) {
@@ -178,7 +180,7 @@ pub fn improve_skill(
 
     // Update the index
     let now = chrono::Utc::now().to_rfc3339();
-    index.update_content(slug, &audited_content, &now)?;
+    index.update_content(&validated_slug, &audited_content, &now)?;
 
     Ok(Some(skill_path))
 }
