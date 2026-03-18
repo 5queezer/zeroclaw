@@ -43,11 +43,20 @@ struct ResponsesRequest {
 #[derive(Debug, Serialize)]
 struct ResponsesInput {
     role: String,
-    content: Vec<ResponsesInputContent>,
+    content: ResponsesInputContent,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    kind: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
-struct ResponsesInputContent {
+#[serde(untagged)]
+enum ResponsesInputContent {
+    Text(String),
+    Parts(Vec<ResponsesInputPart>),
+}
+
+#[derive(Debug, Serialize)]
+struct ResponsesInputPart {
     #[serde(rename = "type")]
     kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -113,6 +122,36 @@ impl OpenAiCodexProvider {
                 .build()
                 .unwrap_or_else(|_| Client::new()),
         })
+    }
+}
+
+impl ResponsesInput {
+    fn user_text(content: String) -> Self {
+        Self {
+            role: "user".to_string(),
+            content: ResponsesInputContent::Text(content),
+            kind: None,
+        }
+    }
+
+    fn user_parts(parts: Vec<ResponsesInputPart>) -> Self {
+        Self {
+            role: "user".to_string(),
+            content: ResponsesInputContent::Parts(parts),
+            kind: Some("message".to_string()),
+        }
+    }
+
+    fn assistant_output_text(content: String) -> Self {
+        Self {
+            role: "assistant".to_string(),
+            content: ResponsesInputContent::Parts(vec![ResponsesInputPart {
+                kind: "output_text".to_string(),
+                text: Some(content),
+                image_url: None,
+            }]),
+            kind: Some("message".to_string()),
+        }
     }
 }
 
@@ -220,11 +259,16 @@ fn build_responses_input(messages: &[ChatMessage]) -> (String, Vec<ResponsesInpu
             "user" => {
                 let (cleaned_text, image_refs) = multimodal::parse_image_markers(&msg.content);
 
+                if image_refs.is_empty() {
+                    input.push(ResponsesInput::user_text(cleaned_text));
+                    continue;
+                }
+
                 let mut content_items = Vec::new();
 
                 // Add text if present
                 if !cleaned_text.trim().is_empty() {
-                    content_items.push(ResponsesInputContent {
+                    content_items.push(ResponsesInputPart {
                         kind: "input_text".to_string(),
                         text: Some(cleaned_text),
                         image_url: None,
@@ -233,7 +277,7 @@ fn build_responses_input(messages: &[ChatMessage]) -> (String, Vec<ResponsesInpu
 
                 // Add images
                 for image_ref in image_refs {
-                    content_items.push(ResponsesInputContent {
+                    content_items.push(ResponsesInputPart {
                         kind: "input_image".to_string(),
                         text: None,
                         image_url: Some(image_ref),
@@ -242,27 +286,17 @@ fn build_responses_input(messages: &[ChatMessage]) -> (String, Vec<ResponsesInpu
 
                 // If no content at all, add empty text
                 if content_items.is_empty() {
-                    content_items.push(ResponsesInputContent {
+                    content_items.push(ResponsesInputPart {
                         kind: "input_text".to_string(),
                         text: Some(String::new()),
                         image_url: None,
                     });
                 }
 
-                input.push(ResponsesInput {
-                    role: "user".to_string(),
-                    content: content_items,
-                });
+                input.push(ResponsesInput::user_parts(content_items));
             }
             "assistant" => {
-                input.push(ResponsesInput {
-                    role: "assistant".to_string(),
-                    content: vec![ResponsesInputContent {
-                        kind: "output_text".to_string(),
-                        text: Some(msg.content.clone()),
-                        image_url: None,
-                    }],
-                });
+                input.push(ResponsesInput::assistant_output_text(msg.content.clone()));
             }
             _ => {}
         }
@@ -1044,11 +1078,14 @@ data: [DONE]
             .map(|item| serde_json::to_value(item).unwrap())
             .collect();
         assert_eq!(json[0]["role"], "user");
-        assert_eq!(json[0]["content"][0]["type"], "input_text");
+        assert!(json[0].get("type").is_none());
+        assert_eq!(json[0]["content"], "Hi");
         assert_eq!(json[1]["role"], "assistant");
+        assert_eq!(json[1]["type"], "message");
         assert_eq!(json[1]["content"][0]["type"], "output_text");
         assert_eq!(json[2]["role"], "user");
-        assert_eq!(json[2]["content"][0]["type"], "input_text");
+        assert!(json[2].get("type").is_none());
+        assert_eq!(json[2]["content"], "Thanks");
     }
 
     #[test]
@@ -1060,6 +1097,9 @@ data: [DONE]
         let (instructions, input) = build_responses_input(&messages);
         assert_eq!(instructions, DEFAULT_CODEX_INSTRUCTIONS);
         assert_eq!(input.len(), 1);
+        let json = serde_json::to_value(&input[0]).unwrap();
+        assert!(json.get("type").is_none());
+        assert_eq!(json["content"], "Hello");
     }
 
     #[test]
@@ -1079,6 +1119,8 @@ data: [DONE]
         assert_eq!(input.len(), 1);
         let json = serde_json::to_value(&input[0]).unwrap();
         assert_eq!(json["role"], "user");
+        assert!(json.get("type").is_none());
+        assert_eq!(json["content"], "Go");
     }
 
     #[test]
@@ -1089,14 +1131,11 @@ data: [DONE]
         let (_, input) = build_responses_input(&messages);
 
         assert_eq!(input.len(), 1);
-        assert_eq!(input[0].role, "user");
-        assert_eq!(input[0].content.len(), 2);
-
-        let json: Vec<Value> = input[0]
-            .content
-            .iter()
-            .map(|item| serde_json::to_value(item).unwrap())
-            .collect();
+        let item = serde_json::to_value(&input[0]).unwrap();
+        assert_eq!(item["role"], "user");
+        assert_eq!(item["type"], "message");
+        let json = item["content"].as_array().unwrap();
+        assert_eq!(json.len(), 2);
 
         // First content = text
         assert_eq!(json[0]["type"], "input_text");
@@ -1113,11 +1152,9 @@ data: [DONE]
         let (_, input) = build_responses_input(&messages);
 
         assert_eq!(input.len(), 1);
-        assert_eq!(input[0].content.len(), 1);
-
-        let json = serde_json::to_value(&input[0].content[0]).unwrap();
-        assert_eq!(json["type"], "input_text");
-        assert_eq!(json["text"], "Hello without images");
+        let item = serde_json::to_value(&input[0]).unwrap();
+        assert!(item.get("type").is_none());
+        assert_eq!(item["content"], "Hello without images");
     }
 
     #[test]
@@ -1128,13 +1165,9 @@ data: [DONE]
         let (_, input) = build_responses_input(&messages);
 
         assert_eq!(input.len(), 1);
-        assert_eq!(input[0].content.len(), 3); // text + 2 images
-
-        let json: Vec<Value> = input[0]
-            .content
-            .iter()
-            .map(|item| serde_json::to_value(item).unwrap())
-            .collect();
+        let item = serde_json::to_value(&input[0]).unwrap();
+        let json = item["content"].as_array().unwrap();
+        assert_eq!(json.len(), 3); // text + 2 images
 
         assert_eq!(json[0]["type"], "input_text");
         assert_eq!(json[1]["type"], "input_image");
