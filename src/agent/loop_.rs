@@ -4,7 +4,7 @@ use crate::config::Config;
 use crate::cost::types::{BudgetCheck, TokenUsage as CostTokenUsage};
 use crate::cost::CostTracker;
 use crate::i18n::ToolDescriptions;
-use crate::memory::{self, Memory, MemoryCategory};
+use crate::memory::{self, decay, Memory, MemoryCategory};
 use crate::multimodal;
 use crate::observability::{self, runtime_trace, Observer, ObserverEvent};
 use crate::providers::{
@@ -558,9 +558,13 @@ fn save_interactive_session_history(path: &Path, history: &[ChatMessage]) -> Res
     Ok(())
 }
 
+/// Default half-life (days) for time decay in context building.
+const CONTEXT_DECAY_HALF_LIFE_DAYS: f64 = 7.0;
+
 /// Build context preamble by searching memory for relevant entries.
 /// Entries with a hybrid score below `min_relevance_score` are dropped to
 /// prevent unrelated memories from bleeding into the conversation.
+/// Core memories are exempt from time decay (evergreen).
 async fn build_context(
     mem: &dyn Memory,
     user_msg: &str,
@@ -570,7 +574,10 @@ async fn build_context(
     let mut context = String::new();
 
     // Pull relevant memories for this message
-    if let Ok(entries) = mem.recall(user_msg, 5, session_id, None, None).await {
+    if let Ok(mut entries) = mem.recall(user_msg, 5, session_id, None, None).await {
+        // Apply time decay: older non-Core memories score lower
+        decay::apply_time_decay(&mut entries, CONTEXT_DECAY_HALF_LIFE_DAYS);
+
         let relevant: Vec<_> = entries
             .iter()
             .filter(|e| match e.score {
