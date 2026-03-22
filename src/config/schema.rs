@@ -3779,7 +3779,7 @@ impl Default for OpenCodeCliConfig {
 // ── A2A (Agent-to-Agent) protocol ────────────────────────────────
 
 /// A2A (Agent-to-Agent) protocol configuration (`[a2a]`).
-#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct A2aConfig {
     /// Enable the A2A protocol server and client tool.
     #[serde(default)]
@@ -3815,20 +3815,6 @@ impl std::fmt::Debug for A2aConfig {
             .field("version", &self.version)
             .field("capabilities", &self.capabilities)
             .finish()
-    }
-}
-
-impl Default for A2aConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            agent_name: None,
-            description: None,
-            public_url: None,
-            bearer_token: None,
-            version: None,
-            capabilities: Vec::new(),
-        }
     }
 }
 
