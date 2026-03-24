@@ -77,6 +77,11 @@ where
         }
         MemoryBackendKind::Postgres => postgres_builder(),
         MemoryBackendKind::Muninndb | MemoryBackendKind::Qdrant | MemoryBackendKind::Markdown => {
+            // Offline/lightweight fallback — data stored here is separate from
+            // the actual backend (MuninnDB/Qdrant) and won't be visible there.
+            tracing::debug!(
+                "Using markdown fallback for '{backend_name}' in lightweight context"
+            );
             Ok(Box::new(MarkdownMemory::new(workspace_dir)))
         }
         MemoryBackendKind::None => Ok(Box::new(NoneMemory::new())),
@@ -367,10 +372,15 @@ pub fn create_memory_with_storage_and_routes(
             .or_else(|| std::env::var("MUNINNDB_URL").ok())
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| "http://127.0.0.1:8475".to_string());
-        let vault = std::env::var("MUNINNDB_VAULT")
-            .ok()
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| config.muninndb.vault.clone());
+        let vault_from_config = config.muninndb.vault.trim();
+        let vault = if vault_from_config.is_empty() || vault_from_config == "default" {
+            std::env::var("MUNINNDB_VAULT")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| config.muninndb.vault.clone())
+        } else {
+            config.muninndb.vault.clone()
+        };
         let muninndb_api_key = config
             .muninndb
             .api_key
