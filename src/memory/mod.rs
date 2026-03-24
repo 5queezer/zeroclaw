@@ -79,9 +79,7 @@ where
         MemoryBackendKind::Muninndb | MemoryBackendKind::Qdrant | MemoryBackendKind::Markdown => {
             // Offline/lightweight fallback — data stored here is separate from
             // the actual backend (MuninnDB/Qdrant) and won't be visible there.
-            tracing::debug!(
-                "Using markdown fallback for '{backend_name}' in lightweight context"
-            );
+            tracing::debug!("Using markdown fallback for '{backend_name}' in lightweight context");
             Ok(Box::new(MarkdownMemory::new(workspace_dir)))
         }
         MemoryBackendKind::None => Ok(Box::new(NoneMemory::new())),
@@ -392,7 +390,11 @@ pub fn create_memory_with_storage_and_routes(
             url,
             vault
         );
-        return Ok(Box::new(MuninndbMemory::new(&url, &vault, muninndb_api_key)));
+        return Ok(Box::new(MuninndbMemory::new(
+            &url,
+            &vault,
+            muninndb_api_key,
+        )));
     }
 
     if matches!(backend_kind, MemoryBackendKind::Qdrant) {

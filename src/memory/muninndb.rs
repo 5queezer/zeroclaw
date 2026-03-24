@@ -327,15 +327,16 @@ impl Memory for MuninndbMemory {
 
         // Find an exact concept match among the top results.
         if let Some(item) = result.activations.iter().find(|a| a.concept == key) {
-            let engram = self.fetch_engram(&item.id).await?.unwrap_or_else(|| {
-                ReadResponse {
+            let engram = self
+                .fetch_engram(&item.id)
+                .await?
+                .unwrap_or_else(|| ReadResponse {
                     id: item.id.clone(),
                     concept: item.concept.clone(),
                     content: item.content.clone(),
                     created_at: 0,
                     tags: vec![],
-                }
-            });
+                });
             return Ok(Some(Self::to_entry(&engram, Some(item.score))));
         }
 
@@ -348,12 +349,10 @@ impl Memory for MuninndbMemory {
         session_id: Option<&str>,
     ) -> Result<Vec<MemoryEntry>> {
         // Build query with optional server-side tag filter for category.
-        let mut path = format!(
-            "/api/engrams?vault={}&limit=200",
-            urlencode(&self.vault)
-        );
+        let mut path = format!("/api/engrams?vault={}&limit=200", urlencode(&self.vault));
         if let Some(cat) = category {
-            path.push_str(&format!("&tags={}", urlencode(&Self::category_tag(cat))));
+            use std::fmt::Write;
+            let _ = write!(path, "&tags={}", urlencode(&Self::category_tag(cat)));
         }
 
         let resp = self
@@ -409,7 +408,10 @@ impl Memory for MuninndbMemory {
             return Ok(0);
         }
 
-        let stats: StatsResponse = resp.json().await.unwrap_or(StatsResponse { engram_count: 0 });
+        let stats: StatsResponse = resp
+            .json()
+            .await
+            .unwrap_or(StatsResponse { engram_count: 0 });
         Ok(stats.engram_count)
     }
 
@@ -496,7 +498,10 @@ mod tests {
 
             // count went up
             let after = mem.count().await.unwrap();
-            assert!(after > before, "count did not increase: {before} -> {after}");
+            assert!(
+                after > before,
+                "count did not increase: {before} -> {after}"
+            );
             eprintln!("  ✓ count ({before} -> {after})");
 
             // list (unfiltered)
