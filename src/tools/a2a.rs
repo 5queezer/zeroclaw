@@ -1,8 +1,10 @@
-//! A2A (Agent-to-Agent) protocol client tool.
+//! # A2A Tool — MVP Implementation
 //!
-//! Enables the agent to discover and communicate with remote A2A-compatible
-//! agents via the A2A open standard (Linux Foundation). Supports four actions:
-//! `discover`, `send`, `status`, and `result`.
+//! Client-side tool for interacting with remote A2A agents.
+//! Supports: `discover`, `send`, `status`, `result` (polling).
+//!
+//! **Not yet implemented:** streaming (`message/stream`), cancel,
+//! multi-turn conversations, structured/binary message parts.
 
 use super::traits::{Tool, ToolResult};
 use crate::security::SecurityPolicy;

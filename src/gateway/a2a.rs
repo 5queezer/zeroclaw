@@ -1,15 +1,27 @@
-//! A2A (Agent-to-Agent) protocol server handlers.
+//! # A2A Protocol — MVP Implementation
 //!
-//! Serves the agent card at `GET /.well-known/agent-card.json` and processes
-//! inbound JSON-RPC 2.0 task requests at `POST /a2a`.
+//! Implements a minimal subset of the A2A (Agent-to-Agent) protocol:
+//! - Agent Card discovery (`GET /.well-known/agent-card.json`)
+//! - `message/send` (synchronous request/response, no async queue)
+//! - `tasks/get` (polling only)
+//! - Bearer token authentication
+//!
+//! **Not yet implemented (see issue #3566):**
+//! - `message/stream` (SSE)
+//! - `tasks/cancel`
+//! - `input-required` state / multi-turn conversations (`contextId`)
+//! - Push notifications
+//! - Structured/binary message parts (`data`, `raw`)
+//! - Async task execution
+//! - Task persistence
 
 use super::AppState;
 use crate::security::pairing::constant_time_eq;
 use axum::{
-    extract::State,
-    http::{header, HeaderMap, StatusCode},
-    response::IntoResponse,
     Json,
+    extract::State,
+    http::{HeaderMap, StatusCode, header},
+    response::IntoResponse,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -170,8 +182,7 @@ pub async fn handle_a2a_rpc(
     Json(body): Json<JsonRpcRequest>,
 ) -> impl IntoResponse {
     // Check feature enabled
-    let (Some(_card), Some(task_store)) = (&state.a2a_agent_card, &state.a2a_task_store)
-    else {
+    let (Some(_card), Some(task_store)) = (&state.a2a_agent_card, &state.a2a_task_store) else {
         return (
             StatusCode::NOT_FOUND,
             Json(json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32000, "message": "A2A protocol not enabled"}})),
@@ -470,7 +481,7 @@ fn rpc_error(id: serde_json::Value, code: i32, message: &str) -> serde_json::Val
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gateway::{nodes, AppState, GatewayRateLimiter, IdempotencyStore};
+    use crate::gateway::{AppState, GatewayRateLimiter, IdempotencyStore, nodes};
     use crate::memory::{Memory, MemoryCategory, MemoryEntry};
     use crate::providers::Provider;
     use crate::security::pairing::PairingGuard;
@@ -592,6 +603,9 @@ mod tests {
             a2a_agent_card: Some(Arc::new(card)),
             a2a_task_store: Some(Arc::new(TaskStore::new())),
             auth_limiter: Arc::new(crate::gateway::auth_rate_limit::AuthRateLimiter::new()),
+            session_queue: Arc::new(crate::gateway::session_queue::SessionActorQueue::new(
+                8, 30, 600,
+            )),
         }
     }
 
@@ -970,10 +984,12 @@ mod tests {
             .into_response();
         let body = response_json(resp).await;
         assert_eq!(body["error"]["code"], -32602);
-        assert!(body["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("missing message"));
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("missing message")
+        );
     }
 
     #[tokio::test]
