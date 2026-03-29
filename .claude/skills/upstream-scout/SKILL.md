@@ -167,66 +167,67 @@ see our [CONTRIBUTING.md](https://github.com/5queezer/hrafn/blob/main/CONTRIBUTI
 Identify commits in Hrafn's history where a maintainer re-submitted
 a community contributor's work and fix the git authorship.
 
-### Detection prompt
+### Detection
 
-Use this prompt to scan the Hrafn repo:
-
-```
-Scan the git log for commits that originated from upstream PRs where
-the original author was replaced by a maintainer. Cross-reference
-against the upstream-scout report.
-
-For each match:
-1. Identify the commit hash in Hrafn
-2. Identify the original author (name + email from the upstream PR)
-3. Identify the re-submitter (current git author)
-4. Generate a git filter-repo callback that:
-   - Sets author to the original contributor
-   - Adds Co-Authored-By trailer for the re-submitter
-   - Preserves the original commit message
-
-Known cases to check:
-- PR #4266 (time-decay scoring) re-submitted as #4274 by theonlyhennygod
-- PR #3571 (config hot-reload) re-submitted as #4959 by SimianAstronaut7
-
-Search patterns:
-- Commits authored by theonlyhennygod or SimianAstronaut7 whose
-  message references a PR originally submitted by another contributor
-- Commits with "credit belongs to" or "originally submitted by"
-  in the PR description but not in git author
-```
-
-### Verification commands
+Run the deterministic detection script:
 
 ```bash
-# Find commits by known re-submitters
-git log --author="theonlyhennygod" --oneline
-git log --author="SimianAstronaut7" --oneline
+# Full run (git + GitHub API for author resolution)
+./scripts/detect-resubmits.sh --cache-dir /tmp/resubmit-cache
 
-# Cross-reference: does the commit message mention another author?
-git log --author="theonlyhennygod" --grep="5queezer\|credit\|original" --oneline
-git log --author="SimianAstronaut7" --grep="5queezer\|credit\|original" --oneline
+# Local-only (git grep, no API — fast, partial results)
+./scripts/detect-resubmits.sh --local
+
+# Scan a specific branch (default: master)
+./scripts/detect-resubmits.sh --branch main
 ```
 
-### Fix template
+Output is pipe-delimited TSV:
+```
+commit|maintainer|original_author|original_email|original_pr|has_coauthor|pattern
+```
+
+The script finds maintainer commits whose body contains attribution
+patterns (`Supersedes #N`, `Based on #N`, `Adopted from #N`,
+`Original work by @handle`, `merge ... PR #N`). It excludes
+self-supersedes and "merge conflicts from PR" false positives.
+
+**Do not use LLM prompts for detection.** The script is deterministic —
+same repo state produces the same output every run. Adding detection
+patterns requires editing the script, not the prompt.
+
+### Generating the filter-repo script
+
+After running detection, use the TSV output to generate the
+`git filter-repo --commit-callback`. The LLM's role is limited to:
+
+1. Reading the TSV output
+2. Filling in missing emails for `handle:`-only entries (from other
+   rows or via `gh api users/{handle}`)
+3. Generating the Python callback with one entry per commit hash
 
 ```bash
 git filter-repo --commit-callback '
-# Map of stolen commits: re-submitter -> original author
+import re
+
+# Generated from: ./scripts/detect-resubmits.sh
+# Each entry: (commit_hash_prefix, original_author, original_email, co_author_trailer)
 fixes = {
-    b"COMMIT_MSG_PATTERN": {
+    b"COMMIT_HASH_PREFIX": {
         "author_name": b"Original Author",
         "author_email": b"original@email.com",
         "co_author": b"Re-Submitter <re-submitter@email.com>",
     },
 }
 
-for pattern, fix in fixes.items():
-    if pattern in commit.message:
+for prefix, fix in fixes.items():
+    if commit.original_id.startswith(prefix):
         commit.author_name = fix["author_name"]
         commit.author_email = fix["author_email"]
-        if fix["co_author"] not in commit.message:
-            commit.message += b"\nCo-Authored-By: " + fix["co_author"] + b"\n"
+        trailer = b"Co-Authored-By: " + fix["co_author"]
+        if trailer not in commit.message:
+            commit.message = commit.message.rstrip() + b"\n\n" + trailer + b"\n"
+        break
 ' --force
 ```
 
@@ -236,6 +237,7 @@ for pattern, fix in fixes.items():
 - **Backup first.** `git clone --mirror` before any filter-repo operation.
 - **Verify after.** `git log --all --format="%H %an <%ae> %s" | grep -i "original-author"` to confirm fixes applied.
 - **Force-push once.** Batch all corrections into a single rewrite, not multiple force-pushes.
+- **Script is source of truth.** If a commit is not in the script output, it does not get rewritten. No ad-hoc LLM discovery.
 
 ## Limitations
 
