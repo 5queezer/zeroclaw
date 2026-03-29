@@ -49,6 +49,7 @@ lcov.info
 
 # IDE's stuff
 .idea
+.vscode/
 
 # Wrangler cache
 .wrangler/
