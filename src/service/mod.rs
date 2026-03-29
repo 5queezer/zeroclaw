@@ -1620,8 +1620,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn openrc_writability_probe_prefers_runuser_when_available() {
-        let (program, args) =
-            build_openrc_writability_probe_command(Path::new("/etc/hrafn"), true);
+        let (program, args) = build_openrc_writability_probe_command(Path::new("/etc/hrafn"), true);
         assert_eq!(program, "runuser");
         assert_eq!(
             args,

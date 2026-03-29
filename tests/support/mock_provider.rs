@@ -2,9 +2,9 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
-use std::sync::{Arc, Mutex};
 use hrafn::providers::traits::{ChatMessage, TokenUsage};
 use hrafn::providers::{ChatRequest, ChatResponse, Provider, ToolCall};
+use std::sync::{Arc, Mutex};
 
 use super::trace::{LlmTrace, TraceResponse};
 

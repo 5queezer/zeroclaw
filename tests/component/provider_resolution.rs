@@ -8,9 +8,7 @@
 //! credential wiring, and auth header format.
 
 use hrafn::providers::compatible::{AuthStyle, OpenAiCompatibleProvider};
-use hrafn::providers::{
-    create_provider, create_provider_with_options, create_provider_with_url,
-};
+use hrafn::providers::{create_provider, create_provider_with_options, create_provider_with_url};
 
 /// Helper: assert provider creation succeeds
 fn assert_provider_ok(name: &str, key: Option<&str>, url: Option<&str>) {

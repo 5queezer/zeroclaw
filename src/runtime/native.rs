@@ -24,10 +24,8 @@ impl RuntimeAdapter for NativeRuntime {
     }
 
     fn storage_path(&self) -> PathBuf {
-        directories::UserDirs::new().map_or_else(
-            || PathBuf::from(".hrafn"),
-            |u| u.home_dir().join(".hrafn"),
-        )
+        directories::UserDirs::new()
+            .map_or_else(|| PathBuf::from(".hrafn"), |u| u.home_dir().join(".hrafn"))
     }
 
     fn supports_long_running(&self) -> bool {

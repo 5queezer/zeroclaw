@@ -1578,10 +1578,9 @@ mod tests {
         config.default_model = Some("test-model".to_string());
         config.memory.backend = "none".to_string();
         config.memory.auto_save = false;
-        config.extra_headers.insert(
-            "User-Agent".to_string(),
-            "hrafn-web-test/1.0".to_string(),
-        );
+        config
+            .extra_headers
+            .insert("User-Agent".to_string(), "hrafn-web-test/1.0".to_string());
         config
             .extra_headers
             .insert("X-Title".to_string(), "hrafn-web".to_string());

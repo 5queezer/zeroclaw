@@ -8,7 +8,6 @@ This snapshot captures open PR/issue signals to guide docs and information-archi
 
 Collected via GitHub CLI against the upstream `zeroclaw-labs/zeroclaw` repo:
 
-
 - `gh repo view ...`
 - `gh pr list --state open --limit 500 ...`
 - `gh issue list --state open --limit 500 ...`

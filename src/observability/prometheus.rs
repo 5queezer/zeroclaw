@@ -68,10 +68,7 @@ impl PrometheusObserver {
         .expect("valid metric");
 
         let tokens_output_total = IntCounterVec::new(
-            prometheus::Opts::new(
-                "hrafn_tokens_output_total",
-                "Total output tokens consumed",
-            ),
+            prometheus::Opts::new("hrafn_tokens_output_total", "Total output tokens consumed"),
             &["provider", "model"],
         )
         .expect("valid metric");
@@ -148,11 +145,9 @@ impl PrometheusObserver {
         )
         .expect("valid metric");
 
-        let tokens_used = prometheus::IntGauge::new(
-            "hrafn_tokens_used_last",
-            "Tokens used in the last request",
-        )
-        .expect("valid metric");
+        let tokens_used =
+            prometheus::IntGauge::new("hrafn_tokens_used_last", "Tokens used in the last request")
+                .expect("valid metric");
 
         let active_sessions = GaugeVec::new(
             prometheus::Opts::new("hrafn_active_sessions", "Number of active sessions"),
@@ -225,9 +220,8 @@ impl PrometheusObserver {
         )
         .expect("valid metric");
 
-        let mttr =
-            prometheus::Gauge::new("hrafn_mttr_seconds", "Mean time to recovery in seconds")
-                .expect("valid metric");
+        let mttr = prometheus::Gauge::new("hrafn_mttr_seconds", "Mean time to recovery in seconds")
+            .expect("valid metric");
 
         // Register all metrics
         registry.register(Box::new(agent_starts.clone())).ok();

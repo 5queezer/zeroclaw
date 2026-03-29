@@ -2505,10 +2505,8 @@ mod tests {
 
     #[tokio::test]
     async fn background_delegation_returns_task_id() {
-        let workspace = std::env::temp_dir().join(format!(
-            "hrafn_delegate_bg_test_{}",
-            uuid::Uuid::new_v4()
-        ));
+        let workspace =
+            std::env::temp_dir().join(format!("hrafn_delegate_bg_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&workspace).unwrap();
 
         let tool = DelegateTool::new(sample_agents(), None, test_security())

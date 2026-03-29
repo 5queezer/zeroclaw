@@ -2,7 +2,6 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
-use std::sync::Arc;
 use hrafn::agent::agent::Agent;
 use hrafn::agent::dispatcher::{NativeToolDispatcher, XmlToolDispatcher};
 use hrafn::agent::memory_loader::MemoryLoader;
@@ -12,6 +11,7 @@ use hrafn::memory::Memory;
 use hrafn::observability::{NoopObserver, Observer};
 use hrafn::providers::{ChatResponse, Provider, ToolCall};
 use hrafn::tools::Tool;
+use std::sync::Arc;
 
 /// Create an in-memory "none" backend for tests.
 pub fn make_memory() -> Arc<dyn Memory> {

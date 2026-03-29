@@ -1316,8 +1316,7 @@ mod tests {
 
     #[test]
     fn whatsapp_compile_skips_empty_patterns() {
-        let patterns =
-            WhatsAppChannel::compile_mention_patterns(&["@?Hrafn".into(), "  ".into()]);
+        let patterns = WhatsAppChannel::compile_mention_patterns(&["@?Hrafn".into(), "  ".into()]);
         assert_eq!(patterns.len(), 1);
     }
 
@@ -1341,10 +1340,7 @@ mod tests {
     #[test]
     fn whatsapp_text_matches_name_only() {
         let pats = WhatsAppChannel::compile_mention_patterns(&["@?Hrafn".into()]);
-        assert!(WhatsAppChannel::text_matches_patterns(
-            &pats,
-            "Hello Hrafn"
-        ));
+        assert!(WhatsAppChannel::text_matches_patterns(&pats, "Hello Hrafn"));
     }
 
     #[test]
@@ -1354,10 +1350,7 @@ mod tests {
             &pats,
             "Hello @hrafn"
         ));
-        assert!(WhatsAppChannel::text_matches_patterns(
-            &pats,
-            "Hello HRAFN"
-        ));
+        assert!(WhatsAppChannel::text_matches_patterns(&pats, "Hello HRAFN"));
     }
 
     #[test]
@@ -1475,10 +1468,7 @@ mod tests {
     #[test]
     fn whatsapp_strip_returns_none_for_whitespace_only() {
         let pats = WhatsAppChannel::compile_mention_patterns(&["@?Hrafn".into()]);
-        assert_eq!(
-            WhatsAppChannel::strip_patterns(&pats, "  @Hrafn  "),
-            None
-        );
+        assert_eq!(WhatsAppChannel::strip_patterns(&pats, "  @Hrafn  "), None);
     }
 
     #[test]

@@ -2,7 +2,6 @@
 
 Thank you for considering contributing to Hrafn. This document explains how we work together and what you can expect from us.
 
-
 ---
 
 ## Our Promises to Contributors
@@ -30,7 +29,6 @@ Features that touch more than one module (channel + gateway, tool + config, etc.
 
 The GitHub Projects board is the source of truth for what's planned, in progress, and done. It is updated weekly.
 
-
 ---
 
 ## How to Contribute
@@ -48,7 +46,6 @@ Open an issue. Include:
 
 Open a GitHub Discussion with the `Feature Request` label. Describe the problem you're solving, not just the solution you want.
 
-
 ### Submitting code
 
 1. **Check the roadmap.** Is someone already working on this? Is there an RFC?
@@ -60,7 +57,6 @@ Open a GitHub Discussion with the `Feature Request` label. Describe the problem 
 7. **Write a clear PR description.** What changed, why, and how to test it.
 
 ### Contribution ladder
-
 
 | Level | Activity |
 |-------|----------|
@@ -100,7 +96,6 @@ cargo build --no-default-features --features "channel-telegram,tool-a2a,memory-m
 
 ## Code Style
 
-
 - **Minimal dependencies.** Every crate adds to binary size. Justify new deps in your PR.
 - **Trait-first.** Define the interface, then implement. Traits are Hrafn's plugin API.
 - **Inline tests.** `#[cfg(test)] mod tests {}` at the bottom of each file.
@@ -109,11 +104,9 @@ cargo build --no-default-features --features "channel-telegram,tool-a2a,memory-m
 
 ---
 
-
 ## How to Add an Integration
 
 Hrafn's architecture is trait-based. Every subsystem (provider, channel, tool, memory) is a trait implementation registered in a factory. Adding a new integration means implementing a trait and adding one line to `mod.rs`.
-
 
 ```
 src/
@@ -125,7 +118,6 @@ src/
 ```
 
 ### New Provider
-
 
 Create `src/providers/your_provider.rs`:
 
