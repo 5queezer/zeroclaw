@@ -11,6 +11,7 @@ pub mod importance;
 pub mod knowledge_graph;
 pub mod lucid;
 pub mod markdown;
+pub mod muninndb;
 pub mod namespaced;
 pub mod none;
 pub mod policy;
@@ -34,6 +35,7 @@ pub use backend::{
 };
 pub use lucid::LucidMemory;
 pub use markdown::MarkdownMemory;
+pub use muninndb::MuninndbMemory;
 pub use namespaced::NamespacedMemory;
 pub use none::NoneMemory;
 #[allow(unused_imports)]
@@ -67,7 +69,10 @@ where
             let local = sqlite_builder()?;
             Ok(Box::new(LucidMemory::new(workspace_dir, local)))
         }
-        MemoryBackendKind::Qdrant | MemoryBackendKind::Markdown => {
+        MemoryBackendKind::Muninndb | MemoryBackendKind::Qdrant | MemoryBackendKind::Markdown => {
+            // Offline/lightweight fallback — data stored here is separate from
+            // the actual backend (MuninnDB/Qdrant) and won't be visible there.
+            tracing::debug!("Using markdown fallback for '{backend_name}' in lightweight context");
             Ok(Box::new(MarkdownMemory::new(workspace_dir)))
         }
         MemoryBackendKind::None => Ok(Box::new(NoneMemory::new())),
@@ -312,6 +317,42 @@ pub fn create_memory_with_storage_and_routes(
             config.search_mode.clone(),
         )?;
         Ok(mem)
+    }
+
+    if matches!(backend_kind, MemoryBackendKind::Muninndb) {
+        let url = config
+            .muninndb
+            .url
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| std::env::var("MUNINNDB_URL").ok())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "http://127.0.0.1:8475".to_string());
+        let vault_from_config = config.muninndb.vault.trim();
+        let vault = if vault_from_config.is_empty() || vault_from_config == "default" {
+            std::env::var("MUNINNDB_VAULT")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| config.muninndb.vault.clone())
+        } else {
+            config.muninndb.vault.clone()
+        };
+        let muninndb_api_key = config
+            .muninndb
+            .api_key
+            .clone()
+            .or_else(|| std::env::var("MUNINNDB_API_KEY").ok())
+            .filter(|s| !s.trim().is_empty());
+        tracing::info!(
+            "🧠 MuninnDB memory backend configured (url: {}, vault: {})",
+            url,
+            vault
+        );
+        return Ok(Box::new(MuninndbMemory::new(
+            &url,
+            &vault,
+            muninndb_api_key,
+        )));
     }
 
     if matches!(backend_kind, MemoryBackendKind::Qdrant) {
