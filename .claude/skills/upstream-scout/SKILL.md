@@ -1,6 +1,6 @@
 ---
 name: upstream-scout
-description: "Evaluate and port upstream PRs and issues to Hrafn with proper attribution. Identifies unreviewed, silently closed, or re-submitted contributions worth adopting. Use when scouting for upstream work to port, or when ensuring correct git authorship during cherry-picks."
+description: "Find, evaluate, and port ignored or mistreated PRs and issues from upstream ZeroClaw to Hrafn. Use when someone says 'find upstream PRs to port', 'what's worth cherry-picking from zeroclaw', 'scout upstream', 'check zeroclaw for ignored issues', or wants to identify contributions that were closed without comment, re-submitted by maintainers, or left without review. Also use when porting a specific PR and needing attribution guidance."
 ---
 
 # Upstream Scout
@@ -161,6 +161,81 @@ see our [CONTRIBUTING.md](https://github.com/5queezer/hrafn/blob/main/CONTRIBUTI
 - **Never trash-talk ZeroClaw.** State facts: "closed without comment", "re-submitted as #NNNN." Let readers draw their own conclusions.
 - **One comment per PR.** No follow-ups, no arguments.
 - **Tone: sachlich.** Factual, grateful, inviting. Not promotional.
+
+## Phase 5: Author Correction
+
+Identify commits in Hrafn's history where a maintainer re-submitted
+a community contributor's work and fix the git authorship.
+
+### Detection prompt
+
+Use this prompt to scan the Hrafn repo:
+
+```
+Scan the git log for commits that originated from upstream PRs where
+the original author was replaced by a maintainer. Cross-reference
+against the upstream-scout report.
+
+For each match:
+1. Identify the commit hash in Hrafn
+2. Identify the original author (name + email from the upstream PR)
+3. Identify the re-submitter (current git author)
+4. Generate a git filter-repo callback that:
+   - Sets author to the original contributor
+   - Adds Co-Authored-By trailer for the re-submitter
+   - Preserves the original commit message
+
+Known cases to check:
+- PR #4266 (time-decay scoring) re-submitted as #4274 by theonlyhennygod
+- PR #3571 (config hot-reload) re-submitted as #4959 by SimianAstronaut7
+
+Search patterns:
+- Commits authored by theonlyhennygod or SimianAstronaut7 whose
+  message references a PR originally submitted by another contributor
+- Commits with "credit belongs to" or "originally submitted by"
+  in the PR description but not in git author
+```
+
+### Verification commands
+
+```bash
+# Find commits by known re-submitters
+git log --author="theonlyhennygod" --oneline
+git log --author="SimianAstronaut7" --oneline
+
+# Cross-reference: does the commit message mention another author?
+git log --author="theonlyhennygod" --grep="5queezer\|credit\|original" --oneline
+git log --author="SimianAstronaut7" --grep="5queezer\|credit\|original" --oneline
+```
+
+### Fix template
+
+```bash
+git filter-repo --commit-callback '
+# Map of stolen commits: re-submitter -> original author
+fixes = {
+    b"COMMIT_MSG_PATTERN": {
+        "author_name": b"Original Author",
+        "author_email": b"original@email.com",
+        "co_author": b"Re-Submitter <re-submitter@email.com>",
+    },
+}
+
+for pattern, fix in fixes.items():
+    if pattern in commit.message:
+        commit.author_name = fix["author_name"]
+        commit.author_email = fix["author_email"]
+        if fix["co_author"] not in commit.message:
+            commit.message += b"\nCo-Authored-By: " + fix["co_author"] + b"\n"
+' --force
+```
+
+### Rules
+
+- **Run before M4 (Community Launch).** After external forks exist, rewriting history is a breaking change.
+- **Backup first.** `git clone --mirror` before any filter-repo operation.
+- **Verify after.** `git log --all --format="%H %an <%ae> %s" | grep -i "original-author"` to confirm fixes applied.
+- **Force-push once.** Batch all corrections into a single rewrite, not multiple force-pushes.
 
 ## Limitations
 
