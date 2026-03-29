@@ -1220,12 +1220,16 @@ fn create_provider_with_url_and_options(
             key,
             AuthStyle::Bearer,
         ))),
-        name if moonshot_base_url(name).is_some() => Ok(compat(OpenAiCompatibleProvider::new(
-            "Moonshot",
-            moonshot_base_url(name).expect("checked in guard"),
-            key,
-            AuthStyle::Bearer,
-        ))),
+        name if moonshot_base_url(name).is_some() => {
+            let url =
+                moonshot_base_url(name).ok_or_else(|| anyhow::anyhow!("unreachable: guard"))?;
+            Ok(compat(OpenAiCompatibleProvider::new(
+                "Moonshot",
+                url,
+                key,
+                AuthStyle::Bearer,
+            )))
+        }
         "kimi-code" | "kimi_coding" | "kimi_for_coding" => {
             Ok(compat(OpenAiCompatibleProvider::new_with_user_agent(
                 "Kimi Code",
@@ -1253,28 +1257,36 @@ fn create_provider_with_url_and_options(
             key,
             AuthStyle::Bearer,
         ))),
-        name if zai_base_url(name).is_some() => Ok(compat(OpenAiCompatibleProvider::new(
-            "Z.AI",
-            zai_base_url(name).expect("checked in guard"),
-            key,
-            AuthStyle::ZhipuJwt,
-        ))),
-        name if glm_base_url(name).is_some() => {
-            Ok(compat(OpenAiCompatibleProvider::new_no_responses_fallback(
-                "GLM",
-                glm_base_url(name).expect("checked in guard"),
+        name if zai_base_url(name).is_some() => {
+            let url = zai_base_url(name).ok_or_else(|| anyhow::anyhow!("unreachable: guard"))?;
+            Ok(compat(OpenAiCompatibleProvider::new(
+                "Z.AI",
+                url,
                 key,
                 AuthStyle::ZhipuJwt,
             )))
         }
-        name if minimax_base_url(name).is_some() => Ok(compat(
-            OpenAiCompatibleProvider::new_merge_system_into_user(
-                "MiniMax",
-                minimax_base_url(name).expect("checked in guard"),
+        name if glm_base_url(name).is_some() => {
+            let url = glm_base_url(name).ok_or_else(|| anyhow::anyhow!("unreachable: guard"))?;
+            Ok(compat(OpenAiCompatibleProvider::new_no_responses_fallback(
+                "GLM",
+                url,
                 key,
-                AuthStyle::Bearer,
-            ),
-        )),
+                AuthStyle::ZhipuJwt,
+            )))
+        }
+        name if minimax_base_url(name).is_some() => {
+            let url =
+                minimax_base_url(name).ok_or_else(|| anyhow::anyhow!("unreachable: guard"))?;
+            Ok(compat(
+                OpenAiCompatibleProvider::new_merge_system_into_user(
+                    "MiniMax",
+                    url,
+                    key,
+                    AuthStyle::Bearer,
+                ),
+            ))
+        }
         "azure_openai" | "azure-openai" | "azure" => {
             let resource = std::env::var("AZURE_OPENAI_RESOURCE")
                 .unwrap_or_else(|_| "my-resource".to_string());
@@ -1348,9 +1360,10 @@ fn create_provider_with_url_and_options(
             ),
         )),
         name if qwen_base_url(name).is_some() => {
+            let url = qwen_base_url(name).ok_or_else(|| anyhow::anyhow!("unreachable: guard"))?;
             Ok(compat(OpenAiCompatibleProvider::new_with_vision(
                 "Qwen",
-                qwen_base_url(name).expect("checked in guard"),
+                url,
                 key,
                 AuthStyle::Bearer,
                 true,

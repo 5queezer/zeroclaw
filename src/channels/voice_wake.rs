@@ -281,13 +281,30 @@ pub fn compute_rms_energy(samples: &[f32]) -> f32 {
 /// Encode raw f32 PCM samples as a WAV byte buffer (16-bit PCM).
 ///
 /// This produces a minimal valid WAV file that Whisper-compatible APIs accept.
+/// Returns an empty `Vec` if the sample buffer is too large for WAV (>2 GB data).
 pub fn encode_wav_from_f32(samples: &[f32], sample_rate: u32, channels: u16) -> Vec<u8> {
     let bits_per_sample: u16 = 16;
-    let byte_rate = u32::from(channels) * sample_rate * u32::from(bits_per_sample) / 8;
+    let byte_rate = u32::from(channels)
+        .saturating_mul(sample_rate)
+        .saturating_mul(u32::from(bits_per_sample))
+        / 8;
     let block_align = channels * bits_per_sample / 8;
-    #[allow(clippy::cast_possible_truncation)]
-    let data_len = (samples.len() * 2) as u32; // 16-bit = 2 bytes per sample; max ~25 MB
-    let file_len = 36 + data_len;
+
+    // Guard against overflow: each sample is 2 bytes, and data_len must fit u32.
+    let Some(data_len) = (samples.len())
+        .checked_mul(2)
+        .and_then(|n| u32::try_from(n).ok())
+    else {
+        tracing::warn!(
+            sample_count = samples.len(),
+            "WAV encode: sample buffer too large, skipping"
+        );
+        return Vec::new();
+    };
+    let Some(file_len) = 36u32.checked_add(data_len) else {
+        tracing::warn!("WAV encode: file size overflow, skipping");
+        return Vec::new();
+    };
 
     let mut buf = Vec::with_capacity(file_len as usize + 8);
 
