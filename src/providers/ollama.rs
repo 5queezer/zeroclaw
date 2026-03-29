@@ -830,7 +830,7 @@ impl Provider for OllamaProvider {
         // /api/chat tool-calling parameter. Models that lack support silently
         // ignore the tools array and emit tool-call JSON as plain text, which the
         // agent loop cannot parse without the XML protocol instructions.
-        // See: https://github.com/zeroclaw-labs/zeroclaw/issues/3999
+        // See: https://github.com/5queezer/hrafn/issues/3999
         false
     }
 

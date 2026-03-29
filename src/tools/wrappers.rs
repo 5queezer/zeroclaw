@@ -123,7 +123,7 @@ impl<T: Tool> PathGuardedTool<T> {
         if let Some(ref f) = self.extractor {
             return f(args);
         }
-        // Default: check common argument names used across ZeroClaw tools.
+        // Default: check common argument names used across Hrafn tools.
         for field in &["path", "command", "pattern", "query", "file"] {
             if let Some(s) = args.get(field).and_then(|v| v.as_str()) {
                 return Some(s.to_string());

@@ -26,12 +26,12 @@ pub fn icon_for_state(connected: bool, status: AgentStatus) -> Image<'static> {
 /// Tooltip text for the current state.
 pub fn tooltip_for_state(connected: bool, status: AgentStatus) -> &'static str {
     if !connected {
-        return "ZeroClaw — Disconnected";
+        return "Hrafn — Disconnected";
     }
     match status {
-        AgentStatus::Idle => "ZeroClaw — Idle",
-        AgentStatus::Working => "ZeroClaw — Working",
-        AgentStatus::Error => "ZeroClaw — Error",
+        AgentStatus::Idle => "Hrafn — Idle",
+        AgentStatus::Working => "Hrafn — Working",
+        AgentStatus::Error => "Hrafn — Error",
     }
 }
 
@@ -58,33 +58,27 @@ mod tests {
     fn tooltip_disconnected() {
         assert_eq!(
             tooltip_for_state(false, AgentStatus::Idle),
-            "ZeroClaw — Disconnected"
+            "Hrafn — Disconnected"
         );
         // Agent status is irrelevant when disconnected.
         assert_eq!(
             tooltip_for_state(false, AgentStatus::Working),
-            "ZeroClaw — Disconnected"
+            "Hrafn — Disconnected"
         );
         assert_eq!(
             tooltip_for_state(false, AgentStatus::Error),
-            "ZeroClaw — Disconnected"
+            "Hrafn — Disconnected"
         );
     }
 
     #[test]
     fn tooltip_connected_variants() {
-        assert_eq!(
-            tooltip_for_state(true, AgentStatus::Idle),
-            "ZeroClaw — Idle"
-        );
+        assert_eq!(tooltip_for_state(true, AgentStatus::Idle), "Hrafn — Idle");
         assert_eq!(
             tooltip_for_state(true, AgentStatus::Working),
-            "ZeroClaw — Working"
+            "Hrafn — Working"
         );
-        assert_eq!(
-            tooltip_for_state(true, AgentStatus::Error),
-            "ZeroClaw — Error"
-        );
+        assert_eq!(tooltip_for_state(true, AgentStatus::Error), "Hrafn — Error");
     }
 
     #[test]

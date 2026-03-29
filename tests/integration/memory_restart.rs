@@ -6,9 +6,9 @@
 //! Tests SqliteMemory deduplication on restart, session scoping, concurrent
 //! message ordering, and recall behavior after re-initialization.
 
+use hrafn::memory::sqlite::SqliteMemory;
+use hrafn::memory::traits::{Memory, MemoryCategory};
 use std::sync::Arc;
-use zeroclaw::memory::sqlite::SqliteMemory;
-use zeroclaw::memory::traits::{Memory, MemoryCategory};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Deduplication: same key overwrites instead of duplicating (#430)

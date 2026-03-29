@@ -1,5 +1,5 @@
 
-export const LOCALE_STORAGE_KEY = 'zeroclaw-locale';
+export const LOCALE_STORAGE_KEY = 'hrafn-locale';
 
 const DEFAULT_LOCALE = 'en';
 

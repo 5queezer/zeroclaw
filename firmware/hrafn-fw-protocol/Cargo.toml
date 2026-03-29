@@ -1,11 +1,11 @@
 [workspace]
 
 [package]
-name = "zeroclaw-fw-protocol"
+name = "hrafn-fw-protocol"
 version = "0.1.0"
 edition = "2021"
 license = "MPL-2.0"
-description = "ZeroClaw firmware protocol — no_std JSON-over-serial command parsing and response formatting"
+description = "Hrafn firmware protocol — no_std JSON-over-serial command parsing and response formatting"
 
 [dependencies]
 heapless = { version = "0.9", default-features = false }

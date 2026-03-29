@@ -60,7 +60,7 @@ struct RedditItemData {
 
 const REDDIT_API_BASE: &str = "https://oauth.reddit.com";
 const REDDIT_TOKEN_URL: &str = "https://www.reddit.com/api/v1/access_token";
-const USER_AGENT: &str = "zeroclaw:channel:v0.1.0 (by /u/zeroclaw-bot)";
+const USER_AGENT: &str = "hrafn:channel:v0.1.0 (by /u/hrafn-bot)";
 /// Reddit enforces 60 requests per minute.
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -269,10 +269,7 @@ impl Channel for RedditChannel {
             }
         } else {
             // Direct message
-            let subject = message
-                .subject
-                .as_deref()
-                .unwrap_or("Message from ZeroClaw");
+            let subject = message.subject.as_deref().unwrap_or("Message from Hrafn");
             let resp = client
                 .post(format!("{REDDIT_API_BASE}/api/compose"))
                 .bearer_auth(&token)

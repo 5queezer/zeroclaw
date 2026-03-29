@@ -10,6 +10,7 @@
 
 <p align="center">
   <a href="#quickstart">Quickstart</a> · <a href="#architecture">Architecture</a> · <a href="CONTRIBUTING.md">Contributing</a> · <a href="https://github.com/5queezer/hrafn/discussions">Discussions</a>
+
 </p>
 
 ---
@@ -85,6 +86,7 @@ src/
 ├── gateway/      # HTTP/WS control plane
 ├── agent/        # Orchestration loop
 └── config/       # TOML configuration
+
 ```
 
 ### Compile-time modularity
@@ -112,6 +114,7 @@ memory-muninndb = ["dep:muninndb"]
 
 # Infrastructure
 gateway = []
+
 ```
 
 ### Runtime extensibility
@@ -123,6 +126,7 @@ Any MCP server is a plugin. Configure in `config.toml`:
 servers = [
   { name = "my-tool", command = "npx", args = ["-y", "my-mcp-server"] },
 ]
+
 ```
 
 No recompilation needed. MCP plugins can be written in any language.

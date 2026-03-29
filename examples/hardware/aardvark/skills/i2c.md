@@ -1,6 +1,6 @@
 # Skill: I2C Operations via Aardvark
 
-<!-- Copy to ~/.zeroclaw/hardware/skills/i2c.md -->
+<!-- Copy to ~/.hrafn/hardware/skills/i2c.md -->
 
 ## Always scan first
 

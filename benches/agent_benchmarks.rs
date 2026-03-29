@@ -1,4 +1,4 @@
-//! Performance benchmarks for ZeroClaw hot paths.
+//! Performance benchmarks for Hrafn hot paths.
 //!
 //! Benchmarks cover:
 //!   - Tool dispatch (XML parsing, native parsing)
@@ -7,20 +7,20 @@
 //!
 //! Run: `cargo bench`
 //!
-//! Ref: https://github.com/zeroclaw-labs/zeroclaw/issues/618 (item 7)
+//! Ref: https://github.com/5queezer/hrafn/issues/618 (item 7)
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 use std::sync::{Arc, Mutex};
 
-use zeroclaw::agent::agent::Agent;
-use zeroclaw::agent::dispatcher::{NativeToolDispatcher, ToolDispatcher, XmlToolDispatcher};
-use zeroclaw::config::MemoryConfig;
-use zeroclaw::memory;
-use zeroclaw::memory::{Memory, MemoryCategory};
-use zeroclaw::observability::{NoopObserver, Observer};
-use zeroclaw::providers::{ChatRequest, ChatResponse, Provider, ToolCall};
-use zeroclaw::tools::{Tool, ToolResult};
+use hrafn::agent::agent::Agent;
+use hrafn::agent::dispatcher::{NativeToolDispatcher, ToolDispatcher, XmlToolDispatcher};
+use hrafn::config::MemoryConfig;
+use hrafn::memory;
+use hrafn::memory::{Memory, MemoryCategory};
+use hrafn::observability::{NoopObserver, Observer};
+use hrafn::providers::{ChatRequest, ChatResponse, Provider, ToolCall};
+use hrafn::tools::{Tool, ToolResult};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -153,7 +153,7 @@ fn bench_xml_parsing(c: &mut Criterion) {
         text: Some(
             r#"Here is my analysis.
 <tool_call>
-{"name": "search", "arguments": {"query": "zeroclaw architecture"}}
+{"name": "search", "arguments": {"query": "hrafn architecture"}}
 </tool_call>
 Let me know if you need more."#
                 .into(),
@@ -203,7 +203,7 @@ fn bench_native_parsing(c: &mut Criterion) {
             ToolCall {
                 id: "tc1".into(),
                 name: "search".into(),
-                arguments: r#"{"query": "zeroclaw"}"#.into(),
+                arguments: r#"{"query": "hrafn"}"#.into(),
             },
             ToolCall {
                 id: "tc2".into(),
@@ -234,7 +234,7 @@ fn bench_memory_operations(c: &mut Criterion) {
         for i in 0..100 {
             mem.store(
                 &format!("key_{i}"),
-                &format!("Content entry number {i} about zeroclaw agent runtime"),
+                &format!("Content entry number {i} about hrafn agent runtime"),
                 MemoryCategory::Core,
                 None,
             )
@@ -263,7 +263,7 @@ fn bench_memory_operations(c: &mut Criterion) {
     c.bench_function("memory_recall_top10", |b| {
         b.iter(|| {
             rt.block_on(async {
-                mem.recall(black_box("zeroclaw agent"), 10, None, None, None)
+                mem.recall(black_box("hrafn agent"), 10, None, None, None)
                     .await
                     .unwrap()
             })

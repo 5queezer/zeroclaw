@@ -76,6 +76,7 @@ Progression is based on trust built through consistent, quality contributions. T
 ```bash
 git clone https://github.com/5queezer/hrafn.git
 cd hrafn
+
 cargo build
 cargo test --locked
 cargo fmt --all -- --check
@@ -88,6 +89,7 @@ To build with specific features only:
 
 ```bash
 cargo build --no-default-features --features "channel-telegram,tool-a2a,memory-muninndb"
+
 ```
 
 ---
@@ -202,6 +204,7 @@ Wrap each new integration in a feature gate:
 ```rust
 #[cfg(feature = "tool-your-tool")]
 pub mod your_tool;
+
 ```
 
 ---

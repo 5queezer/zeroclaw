@@ -758,13 +758,7 @@ mod tests {
     fn expert_ranking_by_authored_contributions() {
         let (_tmp, graph) = test_graph();
         let expert = graph
-            .add_node(
-                NodeType::Expert,
-                "zeroclaw_user",
-                "Backend expert",
-                &[],
-                None,
-            )
+            .add_node(NodeType::Expert, "hrafn_user", "Backend expert", &[], None)
             .unwrap();
         let p1 = graph
             .add_node(
@@ -790,7 +784,7 @@ mod tests {
 
         let experts = graph.find_experts(&["caching".into()]).unwrap();
         assert_eq!(experts.len(), 1);
-        assert_eq!(experts[0].node.title, "zeroclaw_user");
+        assert_eq!(experts[0].node.title, "hrafn_user");
         assert!((experts[0].score - 2.0).abs() < f64::EPSILON);
     }
 

@@ -201,7 +201,7 @@ export default function Logs() {
             agent activity over SSE — LLM requests, tool calls, agent start/end, and errors.
             {' '}<span className="font-semibold" style={{ color: 'var(--pc-text-muted)' }}>What does not: </span>
             daemon stdout and <code>RUST_LOG</code> tracing output go to the terminal or log file, not this stream.
-            {' '}To see tracing logs, run the daemon with <code>RUST_LOG=info zeroclaw</code> and check your terminal.
+            {' '}To see tracing logs, run the daemon with <code>RUST_LOG=info hrafn</code> and check your terminal.
           </div>
           <button
             onClick={() => setInfoDismissed(true)}

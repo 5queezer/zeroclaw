@@ -11,10 +11,9 @@ use serde_json::Value;
 use std::path::PathBuf;
 
 const DEFAULT_CODEX_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
-const CODEX_RESPONSES_URL_ENV: &str = "ZEROCLAW_CODEX_RESPONSES_URL";
-const CODEX_BASE_URL_ENV: &str = "ZEROCLAW_CODEX_BASE_URL";
-const DEFAULT_CODEX_INSTRUCTIONS: &str =
-    "You are ZeroClaw, a concise and helpful coding assistant.";
+const CODEX_RESPONSES_URL_ENV: &str = "HRAFN_CODEX_RESPONSES_URL";
+const CODEX_BASE_URL_ENV: &str = "HRAFN_CODEX_BASE_URL";
+const DEFAULT_CODEX_INSTRUCTIONS: &str = "You are Hrafn, a concise and helpful coding assistant.";
 
 pub struct OpenAiCodexProvider {
     auth: AuthService,
@@ -93,10 +92,7 @@ impl OpenAiCodexProvider {
         options: &ProviderRuntimeOptions,
         gateway_api_key: Option<&str>,
     ) -> anyhow::Result<Self> {
-        let state_dir = options
-            .zeroclaw_dir
-            .clone()
-            .unwrap_or_else(default_zeroclaw_dir);
+        let state_dir = options.hrafn_dir.clone().unwrap_or_else(default_hrafn_dir);
         let auth = AuthService::new(&state_dir, options.secrets_encrypt);
         let responses_url = resolve_responses_url(options)?;
 
@@ -116,10 +112,10 @@ impl OpenAiCodexProvider {
     }
 }
 
-fn default_zeroclaw_dir() -> PathBuf {
+fn default_hrafn_dir() -> PathBuf {
     directories::UserDirs::new().map_or_else(
-        || PathBuf::from(".zeroclaw"),
-        |dirs| dirs.home_dir().join(".zeroclaw"),
+        || PathBuf::from(".hrafn"),
+        |dirs| dirs.home_dir().join(".hrafn"),
     )
 }
 
@@ -309,7 +305,7 @@ fn clamp_reasoning_effort(model: &str, effort: &str) -> String {
 fn resolve_reasoning_effort(model_id: &str, configured: Option<&str>) -> String {
     let raw = configured
         .map(ToString::to_string)
-        .or_else(|| std::env::var("ZEROCLAW_CODEX_REASONING_EFFORT").ok())
+        .or_else(|| std::env::var("HRAFN_CODEX_REASONING_EFFORT").ok())
         .and_then(|value| first_nonempty(Some(&value)))
         .unwrap_or_else(|| "xhigh".to_string())
         .to_ascii_lowercase();
@@ -641,7 +637,7 @@ impl OpenAiCodexProvider {
         } else {
             Some(oauth_access_token.ok_or_else(|| {
                 anyhow::anyhow!(
-                    "OpenAI Codex auth profile not found. Run `zeroclaw auth login --provider openai-codex`."
+                    "OpenAI Codex auth profile not found. Run `hrafn auth login --provider openai-codex`."
                 )
             })?)
         };
@@ -650,7 +646,7 @@ impl OpenAiCodexProvider {
         } else {
             Some(account_id.ok_or_else(|| {
                 anyhow::anyhow!(
-                    "OpenAI Codex account id not found in auth profile/token. Run `zeroclaw auth login --provider openai-codex` again."
+                    "OpenAI Codex account id not found in auth profile/token. Run `hrafn auth login --provider openai-codex` again."
                 )
             })?)
         };
@@ -794,7 +790,7 @@ mod tests {
 
     #[test]
     fn default_state_dir_is_non_empty() {
-        let path = default_zeroclaw_dir();
+        let path = default_hrafn_dir();
         assert!(!path.as_os_str().is_empty());
     }
 
@@ -937,7 +933,7 @@ mod tests {
     #[test]
     fn resolve_reasoning_effort_prefers_configured_override() {
         let _lock = env_lock();
-        let _guard = EnvGuard::set("ZEROCLAW_CODEX_REASONING_EFFORT", Some("low"));
+        let _guard = EnvGuard::set("HRAFN_CODEX_REASONING_EFFORT", Some("low"));
         assert_eq!(
             resolve_reasoning_effort("gpt-5-codex", Some("high")),
             "high".to_string()
@@ -947,7 +943,7 @@ mod tests {
     #[test]
     fn resolve_reasoning_effort_uses_legacy_env_when_unconfigured() {
         let _lock = env_lock();
-        let _guard = EnvGuard::set("ZEROCLAW_CODEX_REASONING_EFFORT", Some("minimal"));
+        let _guard = EnvGuard::set("HRAFN_CODEX_REASONING_EFFORT", Some("minimal"));
         assert_eq!(
             resolve_reasoning_effort("gpt-5-codex", None),
             "low".to_string()
@@ -1123,7 +1119,7 @@ data: [DONE]
     fn capabilities_includes_vision() {
         let options = ProviderRuntimeOptions {
             provider_api_url: None,
-            zeroclaw_dir: None,
+            hrafn_dir: None,
             secrets_encrypt: false,
             auth_profile_override: None,
             reasoning_enabled: None,

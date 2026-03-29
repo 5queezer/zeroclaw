@@ -1,7 +1,7 @@
-//! WASM plugin system for ZeroClaw.
+//! WASM plugin system for Hrafn.
 //!
 //! Plugins are WebAssembly modules loaded via Extism that can extend
-//! ZeroClaw with custom tools and channels. Enable with `--features plugins-wasm`.
+//! Hrafn with custom tools and channels. Enable with `--features plugins-wasm`.
 
 pub mod error;
 pub mod host;

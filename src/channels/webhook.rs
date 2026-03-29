@@ -333,9 +333,9 @@ mod tests {
 
     #[test]
     fn incoming_payload_deserializes_all_fields() {
-        let json = r#"{"sender": "zeroclaw_user", "content": "hello", "thread_id": "t1"}"#;
+        let json = r#"{"sender": "hrafn_user", "content": "hello", "thread_id": "t1"}"#;
         let payload: IncomingWebhook = serde_json::from_str(json).unwrap();
-        assert_eq!(payload.sender, "zeroclaw_user");
+        assert_eq!(payload.sender, "hrafn_user");
         assert_eq!(payload.content, "hello");
         assert_eq!(payload.thread_id.as_deref(), Some("t1"));
     }
@@ -354,12 +354,12 @@ mod tests {
         let payload = OutgoingWebhook {
             content: "response".into(),
             thread_id: Some("t1".into()),
-            recipient: Some("zeroclaw_user".into()),
+            recipient: Some("hrafn_user".into()),
         };
         let json = serde_json::to_value(&payload).unwrap();
         assert_eq!(json["content"], "response");
         assert_eq!(json["thread_id"], "t1");
-        assert_eq!(json["recipient"], "zeroclaw_user");
+        assert_eq!(json["recipient"], "hrafn_user");
     }
 
     #[test]

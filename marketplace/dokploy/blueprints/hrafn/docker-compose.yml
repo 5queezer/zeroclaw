@@ -1,0 +1,16 @@
+version: "3.8"
+services:
+  hrafn:
+    image: ghcr.io/5queezer/hrafn:0.6.4
+    restart: unless-stopped
+    environment:
+      - API_KEY=${API_KEY}
+      - PROVIDER=${PROVIDER:-openrouter}
+      - HRAFN_ALLOW_PUBLIC_BIND=true
+      - HRAFN_GATEWAY_PORT=42617
+    volumes:
+      - hrafn-data:/hrafn-data
+    expose:
+      - 42617
+volumes:
+  hrafn-data: {}

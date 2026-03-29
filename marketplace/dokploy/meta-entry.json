@@ -1,13 +1,13 @@
 {
-  "id": "zeroclaw",
-  "name": "ZeroClaw",
+  "id": "hrafn",
+  "name": "Hrafn",
   "version": "0.6.4",
   "description": "Fast, small, and fully autonomous AI personal assistant infrastructure. Deploy anywhere, swap anything. 100% Rust.",
-  "logo": "zeroclaw.png",
+  "logo": "hrafn.png",
   "links": {
-    "github": "https://github.com/zeroclaw-labs/zeroclaw",
-    "website": "https://zeroclaw.com/",
-    "docs": "https://github.com/zeroclaw-labs/zeroclaw#readme"
+    "github": "https://github.com/5queezer/hrafn",
+    "website": "https://hrafn.com/",
+    "docs": "https://github.com/5queezer/hrafn#readme"
   },
   "tags": ["ai", "self-hosted"]
 }

@@ -1,4 +1,4 @@
-//! Deploy ZeroClaw Bridge app to Arduino Uno Q.
+//! Deploy Hrafn Bridge app to Arduino Uno Q.
 
 use anyhow::{Context, Result};
 use std::process::Command;
@@ -17,7 +17,7 @@ pub fn setup_uno_q_bridge(host: Option<&str>) -> Result<()> {
             deploy_remote(h, &bridge_dir)?;
         } else {
             anyhow::bail!(
-                "Bridge app not found at {}. Run from zeroclaw repo root.",
+                "Bridge app not found at {}. Run from hrafn repo root.",
                 bridge_dir.display()
             );
         }
@@ -74,7 +74,7 @@ fn deploy_remote(host: &str, bridge_dir: &std::path::Path) -> Result<()> {
         anyhow::bail!("Failed to start Bridge app. Ensure arduino-app-cli is installed on Uno Q.");
     }
 
-    println!("ZeroClaw Bridge app started. Add to config.toml:");
+    println!("Hrafn Bridge app started. Add to config.toml:");
     println!("  [[peripherals.boards]]");
     println!("  board = \"arduino-uno-q\"");
     println!("  transport = \"bridge\"");
@@ -105,7 +105,7 @@ fn deploy_local(bridge_dir: Option<&std::path::Path>) -> Result<()> {
         anyhow::bail!("Failed to start Bridge app. Ensure arduino-app-cli is installed on Uno Q.");
     }
 
-    println!("ZeroClaw Bridge app started.");
+    println!("Hrafn Bridge app started.");
     Ok(())
 }
 
@@ -196,7 +196,7 @@ mod tests {
     }
 
     #[test]
-    fn write_embedded_bridge_main_py_contains_zeroclaw() {
+    fn write_embedded_bridge_main_py_contains_hrafn() {
         let tmp = tempfile::tempdir().expect("create temp dir");
         let dest = tmp.path();
 
@@ -204,8 +204,8 @@ mod tests {
 
         let main_py = std::fs::read_to_string(dest.join("python").join("main.py")).unwrap();
         assert!(
-            main_py.contains("ZeroClaw") || main_py.contains("zeroclaw"),
-            "main.py should contain ZeroClaw marker"
+            main_py.contains("Hrafn") || main_py.contains("hrafn"),
+            "main.py should contain Hrafn marker"
         );
     }
 

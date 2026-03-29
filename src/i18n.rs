@@ -88,10 +88,10 @@ impl ToolDescriptions {
 
 /// Detect the user's preferred locale from environment variables.
 ///
-/// Checks `ZEROCLAW_LOCALE`, then `LANG`, then `LC_ALL`.
+/// Checks `HRAFN_LOCALE`, then `LANG`, then `LC_ALL`.
 /// Returns "en" if none are set or parseable.
 pub fn detect_locale() -> String {
-    if let Ok(val) = std::env::var("ZEROCLAW_LOCALE") {
+    if let Ok(val) = std::env::var("HRAFN_LOCALE") {
         let val = val.trim().to_string();
         if !val.is_empty() {
             return normalize_locale(&val);
@@ -259,15 +259,15 @@ shell = "Execute a shell command"
     #[test]
     fn detect_locale_from_env() {
         // Save and restore env.
-        let saved = std::env::var("ZEROCLAW_LOCALE").ok();
+        let saved = std::env::var("HRAFN_LOCALE").ok();
         let saved_lang = std::env::var("LANG").ok();
 
         // SAFETY: test-only, single-threaded test runner.
-        unsafe { std::env::set_var("ZEROCLAW_LOCALE", "ja-JP") };
+        unsafe { std::env::set_var("HRAFN_LOCALE", "ja-JP") };
         assert_eq!(detect_locale(), "ja-JP");
 
         // SAFETY: test-only, single-threaded test runner.
-        unsafe { std::env::remove_var("ZEROCLAW_LOCALE") };
+        unsafe { std::env::remove_var("HRAFN_LOCALE") };
         // SAFETY: test-only, single-threaded test runner.
         unsafe { std::env::set_var("LANG", "zh_CN.UTF-8") };
         assert_eq!(detect_locale(), "zh-CN");
@@ -275,9 +275,9 @@ shell = "Execute a shell command"
         // Restore.
         match saved {
             // SAFETY: test-only, single-threaded test runner.
-            Some(v) => unsafe { std::env::set_var("ZEROCLAW_LOCALE", v) },
+            Some(v) => unsafe { std::env::set_var("HRAFN_LOCALE", v) },
             // SAFETY: test-only, single-threaded test runner.
-            None => unsafe { std::env::remove_var("ZEROCLAW_LOCALE") },
+            None => unsafe { std::env::remove_var("HRAFN_LOCALE") },
         }
         match saved_lang {
             // SAFETY: test-only, single-threaded test runner.

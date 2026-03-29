@@ -93,7 +93,7 @@ enum SlackPermalinkLookup {
     NotFound,
 }
 
-/// Extract the Slack message timestamp from a ZeroClaw message ID.
+/// Extract the Slack message timestamp from a Hrafn message ID.
 ///
 /// Message IDs follow the format `slack_{channel_id}_{ts}` where `ts`
 /// contains a dot (e.g. `"1234567890.123456"`). If the format is
@@ -2462,8 +2462,8 @@ impl SlackChannel {
             .and_then(|v| v.as_str())?;
 
         let command = match action_id {
-            "zeroclaw_config_provider" => format!("/models {selected_value}"),
-            "zeroclaw_config_model" => format!("/model {selected_value}"),
+            "hrafn_config_provider" => format!("/models {selected_value}"),
+            "hrafn_config_model" => format!("/model {selected_value}"),
             _ => return None,
         };
 
