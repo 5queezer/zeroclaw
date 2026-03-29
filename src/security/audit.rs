@@ -283,25 +283,24 @@ impl AuditLogger {
             return Ok(());
         }
 
-        // Check log size and rotate if needed
+        // Hold the chain lock across rotation, chain-state update, and file
+        // write to prevent a race where two concurrent callers both rotate or
+        // interleave writes with inconsistent sequence numbers.
+        let mut chained = event.clone();
+        let mut state = self.chain.lock();
+
+        // Check log size and rotate if needed (under lock)
         self.rotate_if_needed()?;
 
-        // Populate chain fields under the lock
-        let mut chained = event.clone();
-        {
-            let mut state = self.chain.lock();
-            chained.sequence = state.sequence;
-            chained.prev_hash = state.prev_hash.clone();
-            chained.entry_hash = compute_entry_hash(&state.prev_hash, &chained);
+        // Populate chain fields
+        chained.sequence = state.sequence;
+        chained.prev_hash = state.prev_hash.clone();
+        chained.entry_hash = compute_entry_hash(&state.prev_hash, &chained);
 
-            // Compute signature if sign_events enabled
-            chained.signature = self.compute_signature(&chained.entry_hash)?;
+        // Compute signature if sign_events enabled
+        chained.signature = self.compute_signature(&chained.entry_hash)?;
 
-            state.prev_hash = chained.entry_hash.clone();
-            state.sequence += 1;
-        }
-
-        // Serialize and write
+        // Serialize and write (under lock)
         let line = serde_json::to_string(&chained)?;
         let mut file = OpenOptions::new()
             .create(true)
@@ -310,6 +309,10 @@ impl AuditLogger {
 
         writeln!(file, "{}", line)?;
         file.sync_all()?;
+
+        // Update chain state only after successful write
+        state.prev_hash = chained.entry_hash.clone();
+        state.sequence += 1;
 
         Ok(())
     }

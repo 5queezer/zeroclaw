@@ -284,11 +284,23 @@ fn hex_encode(data: &[u8]) -> String {
     s
 }
 
-/// Build the `/grant` argument for `icacls` using a normalized username.
-/// Returns `None` when the username is empty or whitespace-only.
+/// Build the `/grant` argument for `icacls` using a validated username.
+/// Returns `None` when the username is empty, whitespace-only, or contains
+/// characters that could confuse `icacls` argument parsing.
+///
+/// Only allows alphanumeric characters, underscores, hyphens, dots, backslashes
+/// (for `DOMAIN\User`), and spaces (for display names). Rejects anything else
+/// (e.g. `:`, `/`, `"`) to prevent argument injection.
 fn build_windows_icacls_grant_arg(username: &str) -> Option<String> {
     let normalized = username.trim();
     if normalized.is_empty() {
+        return None;
+    }
+    // Reject usernames with characters that could confuse icacls parsing.
+    let is_safe = normalized
+        .chars()
+        .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '\\' | ' '));
+    if !is_safe {
         return None;
     }
     Some(format!("{normalized}:F"))
@@ -808,6 +820,18 @@ mod tests {
             build_windows_icacls_grant_arg("DOMAIN\\svc-user"),
             Some("DOMAIN\\svc-user:F".to_string())
         );
+    }
+
+    #[test]
+    fn windows_icacls_grant_arg_rejects_adversarial_usernames() {
+        // Colon could confuse icacls permission parsing (e.g. "evil:R")
+        assert_eq!(build_windows_icacls_grant_arg("evil:R"), None);
+        // Slash could be misinterpreted as an icacls flag
+        assert_eq!(build_windows_icacls_grant_arg("user/grant"), None);
+        // Quotes could break argument parsing
+        assert_eq!(build_windows_icacls_grant_arg("user\"name"), None);
+        // Parentheses used in icacls permission syntax
+        assert_eq!(build_windows_icacls_grant_arg("user(OI)"), None);
     }
 
     #[test]

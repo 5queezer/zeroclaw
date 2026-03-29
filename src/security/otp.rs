@@ -126,23 +126,48 @@ pub fn secret_file_path(hrafn_dir: &Path) -> PathBuf {
 }
 
 fn write_secret_file(path: &Path, value: &str) -> Result<()> {
+    use std::io::Write;
+
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("Failed to create directory {}", parent.display()))?;
     }
 
     let temp_path = path.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
-    fs::write(&temp_path, value).with_context(|| {
-        format!(
-            "Failed to write temporary OTP secret {}",
-            temp_path.display()
-        )
-    })?;
 
+    // On Unix, create the file with restrictive permissions from the start to
+    // avoid a TOCTOU window where the file is world-readable between creation
+    // and a subsequent chmod.
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o600));
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temp_path)
+            .with_context(|| {
+                format!(
+                    "Failed to create temporary OTP secret {}",
+                    temp_path.display()
+                )
+            })?;
+        file.write_all(value.as_bytes()).with_context(|| {
+            format!(
+                "Failed to write temporary OTP secret {}",
+                temp_path.display()
+            )
+        })?;
+    }
+
+    #[cfg(not(unix))]
+    {
+        fs::write(&temp_path, value).with_context(|| {
+            format!(
+                "Failed to write temporary OTP secret {}",
+                temp_path.display()
+            )
+        })?;
     }
 
     fs::rename(&temp_path, path).with_context(|| {
