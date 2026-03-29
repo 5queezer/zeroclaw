@@ -496,8 +496,10 @@ impl WhatsAppWebChannel {
         );
 
         // Estimate duration: Opus at ~32kbps → bytes / 4000 ≈ seconds
-        #[allow(clippy::cast_possible_truncation)]
-        let estimated_seconds = std::cmp::max(1, (upload.file_length / 4000) as u32);
+        let estimated_seconds = std::cmp::max(
+            1,
+            u32::try_from(upload.file_length / 4000).unwrap_or(u32::MAX),
+        );
 
         let voice_msg = wa_rs_proto::whatsapp::Message {
             audio_message: Some(Box::new(wa_rs_proto::whatsapp::message::AudioMessage {
@@ -697,8 +699,10 @@ impl WhatsAppWebChannel {
             },
             WaAttachmentKind::Audio | WaAttachmentKind::Voice => {
                 let is_voice = attachment.kind == WaAttachmentKind::Voice;
-                #[allow(clippy::cast_possible_truncation)]
-                let estimated_seconds = std::cmp::max(1, (upload.file_length / 4000) as u32);
+                let estimated_seconds = std::cmp::max(
+                    1,
+                    u32::try_from(upload.file_length / 4000).unwrap_or(u32::MAX),
+                );
                 wa_rs_proto::whatsapp::Message {
                     audio_message: Some(Box::new(wa_rs_proto::whatsapp::message::AudioMessage {
                         url: Some(upload.url),

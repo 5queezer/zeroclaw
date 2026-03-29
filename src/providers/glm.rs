@@ -48,23 +48,33 @@ struct ResponseMessage {
 
 /// Base64url encode without padding (per JWT spec).
 fn base64url_encode_bytes(data: &[u8]) -> String {
-    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const CHARS: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    /// Look up a 6-bit index in the base64 alphabet.
+    /// The caller masks with `0x3F`, so `idx` is always 0..63.
+    #[inline]
+    fn b64(idx: u32) -> char {
+        CHARS[idx as usize & 0x3F] as char
+    }
+
     let mut result = String::new();
     let mut i = 0;
     while i < data.len() {
-        let b0 = data[i] as u32;
-        let b1 = if i + 1 < data.len() { data[i + 1] as u32 } else { 0 };
-        let b2 = if i + 2 < data.len() { data[i + 2] as u32 } else { 0 };
+        let b0 = u32::from(data[i]);
+        let b1 = if i + 1 < data.len() { u32::from(data[i + 1]) } else { 0 };
+        let b2 = if i + 2 < data.len() { u32::from(data[i + 2]) } else { 0 };
+        // Each byte is at most 0xFF; the combined triple fits in 24 bits.
         let triple = (b0 << 16) | (b1 << 8) | b2;
 
-        result.push(CHARS[((triple >> 18) & 0x3F) as usize] as char);
-        result.push(CHARS[((triple >> 12) & 0x3F) as usize] as char);
+        result.push(b64(triple >> 18));
+        result.push(b64(triple >> 12));
 
         if i + 1 < data.len() {
-            result.push(CHARS[((triple >> 6) & 0x3F) as usize] as char);
+            result.push(b64(triple >> 6));
         }
         if i + 2 < data.len() {
-            result.push(CHARS[(triple & 0x3F) as usize] as char);
+            result.push(b64(triple));
         }
 
         i += 3;

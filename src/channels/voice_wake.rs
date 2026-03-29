@@ -174,7 +174,15 @@ impl Channel for VoiceWakeChannel {
                         debug!("VoiceWake: Triggered window closed — transcribing for wake word");
 
                         let wav_bytes =
-                            encode_wav_from_f32(&capture_buf, sample_rate, channels_count);
+                            match encode_wav_from_f32(&capture_buf, sample_rate, channels_count) {
+                                Ok(b) => b,
+                                Err(e) => {
+                                    warn!("VoiceWake: WAV encoding error: {e}");
+                                    state = WakeState::Listening;
+                                    capture_buf.clear();
+                                    continue;
+                                }
+                            };
 
                         match transcribe_audio(wav_bytes, "wake_check.wav", &transcription_config)
                             .await
@@ -215,7 +223,15 @@ impl Channel for VoiceWakeChannel {
                         debug!("VoiceWake: utterance capture complete — transcribing");
 
                         let wav_bytes =
-                            encode_wav_from_f32(&capture_buf, sample_rate, channels_count);
+                            match encode_wav_from_f32(&capture_buf, sample_rate, channels_count) {
+                                Ok(b) => b,
+                                Err(e) => {
+                                    warn!("VoiceWake: WAV encoding error: {e}");
+                                    state = WakeState::Listening;
+                                    capture_buf.clear();
+                                    continue;
+                                }
+                            };
 
                         match transcribe_audio(wav_bytes, "utterance.wav", &transcription_config)
                             .await
@@ -281,30 +297,23 @@ pub fn compute_rms_energy(samples: &[f32]) -> f32 {
 /// Encode raw f32 PCM samples as a WAV byte buffer (16-bit PCM).
 ///
 /// This produces a minimal valid WAV file that Whisper-compatible APIs accept.
-/// Returns an empty `Vec` if the sample buffer is too large for WAV (>2 GB data).
-pub fn encode_wav_from_f32(samples: &[f32], sample_rate: u32, channels: u16) -> Vec<u8> {
+pub fn encode_wav_from_f32(samples: &[f32], sample_rate: u32, channels: u16) -> Result<Vec<u8>> {
     let bits_per_sample: u16 = 16;
     let byte_rate = u32::from(channels)
         .saturating_mul(sample_rate)
         .saturating_mul(u32::from(bits_per_sample))
         / 8;
     let block_align = channels * bits_per_sample / 8;
-
-    // Guard against overflow: each sample is 2 bytes, and data_len must fit u32.
-    let Some(data_len) = (samples.len())
-        .checked_mul(2)
-        .and_then(|n| u32::try_from(n).ok())
-    else {
-        tracing::warn!(
-            sample_count = samples.len(),
-            "WAV encode: sample buffer too large, skipping"
-        );
-        return Vec::new();
-    };
-    let Some(file_len) = 36u32.checked_add(data_len) else {
-        tracing::warn!("WAV encode: file size overflow, skipping");
-        return Vec::new();
-    };
+    let data_len = u32::try_from(
+        samples
+            .len()
+            .checked_mul(2)
+            .ok_or_else(|| anyhow::anyhow!("WAV data length overflow"))?,
+    )
+    .map_err(|_| anyhow::anyhow!("WAV data length exceeds u32::MAX"))?;
+    let file_len = data_len
+        .checked_add(36)
+        .ok_or_else(|| anyhow::anyhow!("WAV file length overflow"))?;
 
     let mut buf = Vec::with_capacity(file_len as usize + 8);
 
@@ -334,7 +343,7 @@ pub fn encode_wav_from_f32(samples: &[f32], sample_rate: u32, channels: u16) -> 
         buf.extend_from_slice(&pcm16.to_le_bytes());
     }
 
-    buf
+    Ok(buf)
 }
 
 // ── Tests ──────────────────────────────────────────────────────
@@ -403,7 +412,7 @@ mod tests {
     #[test]
     fn wav_header_is_valid() {
         let samples = vec![0.0f32; 100];
-        let wav = encode_wav_from_f32(&samples, 16000, 1);
+        let wav = encode_wav_from_f32(&samples, 16000, 1).unwrap();
 
         // RIFF header
         assert_eq!(&wav[0..4], b"RIFF");
@@ -435,7 +444,7 @@ mod tests {
     #[test]
     fn wav_total_size_correct() {
         let samples = vec![0.0f32; 50];
-        let wav = encode_wav_from_f32(&samples, 44100, 2);
+        let wav = encode_wav_from_f32(&samples, 44100, 2).unwrap();
         // header (44 bytes) + data (50 * 2 = 100 bytes)
         assert_eq!(wav.len(), 144);
     }
@@ -444,7 +453,7 @@ mod tests {
     fn wav_encodes_clipped_samples() {
         // Samples outside [-1, 1] should be clamped
         let samples = vec![-2.0f32, 2.0, 0.0];
-        let wav = encode_wav_from_f32(&samples, 16000, 1);
+        let wav = encode_wav_from_f32(&samples, 16000, 1).unwrap();
 
         let s0 = i16::from_le_bytes(wav[44..46].try_into().unwrap());
         let s1 = i16::from_le_bytes(wav[46..48].try_into().unwrap());
