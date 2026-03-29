@@ -138,6 +138,11 @@ pub struct EmailChannel {
 
 impl EmailChannel {
     pub fn new(config: EmailConfig) -> Self {
+        if config.allowed_senders.iter().any(|u| u == "*") {
+            tracing::warn!(
+                "Email channel: wildcard '*' in allowed_senders — ALL senders can interact with the agent"
+            );
+        }
         Self {
             config,
             seen_messages: Arc::new(Mutex::new(HashSet::new())),

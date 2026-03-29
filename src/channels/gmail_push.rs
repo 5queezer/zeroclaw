@@ -237,6 +237,11 @@ pub struct GmailPushChannel {
 
 impl GmailPushChannel {
     pub fn new(config: GmailPushConfig) -> Self {
+        if config.allowed_senders.iter().any(|u| u == "*") {
+            tracing::warn!(
+                "Gmail Push channel: wildcard '*' in allowed_senders — ALL senders can interact with the agent"
+            );
+        }
         let http = Client::builder()
             .timeout(Duration::from_secs(30))
             .build()

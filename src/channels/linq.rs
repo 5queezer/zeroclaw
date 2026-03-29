@@ -19,6 +19,11 @@ const LINQ_API_BASE: &str = "https://api.linqapp.com/api/partner/v3";
 
 impl LinqChannel {
     pub fn new(api_token: String, from_phone: String, allowed_senders: Vec<String>) -> Self {
+        if allowed_senders.iter().any(|u| u == "*") {
+            tracing::warn!(
+                "Linq channel: wildcard '*' in allowed_senders — ALL senders can interact with the agent"
+            );
+        }
         Self {
             api_token,
             from_phone,
