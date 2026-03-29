@@ -20,10 +20,6 @@ fn extract_text_from_attributed_body(blob: &[u8]) -> Option<String> {
     let marker_pos = blob.windows(2).position(|w| w == [0x01, 0x2B])?;
     let rest = blob.get(marker_pos + 2..)?;
 
-    if rest.is_empty() {
-        return None;
-    }
-
     // Read variable-length prefix immediately after the marker.
     // The length determines text extent — we do NOT scan for an end marker,
     // because byte pairs like [0x86, 0x84] can appear inside valid UTF-8
@@ -33,20 +29,21 @@ fn extract_text_from_attributed_body(blob: &[u8]) -> Option<String> {
     //   0x81      => next 2 bytes are little-endian u16 length
     //   0x82      => next 4 bytes are little-endian u32 length
     //   0x80, 0x83+ are not observed in iMessage typedstreams; reject gracefully.
-    let (length, text_start) = match rest[0] {
-        0x81 if rest.len() >= 3 => {
-            let len = u16::from_le_bytes([rest[1], rest[2]]) as usize;
-            (len, 3)
+    let (length, text_start): (usize, usize) = match rest.first()? {
+        0x81 => {
+            let bytes: [u8; 2] = rest.get(1..3)?.try_into().ok()?;
+            (u16::from_le_bytes(bytes) as usize, 3)
         }
-        0x82 if rest.len() >= 5 => {
-            let len = u32::from_le_bytes([rest[1], rest[2], rest[3], rest[4]]) as usize;
-            (len, 5)
+        0x82 => {
+            let bytes: [u8; 4] = rest.get(1..5)?.try_into().ok()?;
+            (u32::from_le_bytes(bytes) as usize, 5)
         }
-        b if b <= 0x7F => (b as usize, 1),
+        &b if b <= 0x7F => (b as usize, 1),
         _ => return None,
     };
 
-    let text_bytes = rest.get(text_start..text_start + length)?;
+    let end = text_start.checked_add(length)?;
+    let text_bytes = rest.get(text_start..end)?;
     std::str::from_utf8(text_bytes).ok().map(str::to_owned)
 }
 
