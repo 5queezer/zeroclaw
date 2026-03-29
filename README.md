@@ -9,8 +9,13 @@
 </p>
 
 <p align="center">
-  <a href="#quickstart">Quickstart</a> · <a href="#architecture">Architecture</a> · <a href="CONTRIBUTING.md">Contributing</a> · <a href="https://github.com/5queezer/hrafn/discussions">Discussions</a>
+  <a href="https://github.com/5queezer/hrafn/actions/workflows/ci-run.yml"><img src="https://github.com/5queezer/hrafn/actions/workflows/ci-run.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE-APACHE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License"></a>
+  <a href="https://github.com/5queezer/hrafn/releases"><img src="https://img.shields.io/github/v/release/5queezer/hrafn?include_prereleases" alt="Release"></a>
+</p>
 
+<p align="center">
+  <a href="#quickstart">Quickstart</a> · <a href="#architecture">Architecture</a> · <a href="CONTRIBUTING.md">Contributing</a> · <a href="https://github.com/5queezer/hrafn/discussions">Discussions</a>
 </p>
 
 ---
