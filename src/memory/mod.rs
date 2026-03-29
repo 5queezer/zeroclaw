@@ -319,41 +319,6 @@ pub fn create_memory_with_storage_and_routes(
         Ok(mem)
     }
 
-    #[cfg(feature = "memory-postgres")]
-    fn build_postgres_memory(
-        storage_provider: Option<&StorageProviderConfig>,
-    ) -> anyhow::Result<Box<dyn Memory>> {
-        let storage_provider = storage_provider
-            .context("memory backend 'postgres' requires [storage.provider.config] settings")?;
-        let db_url = storage_provider
-            .db_url
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .context(
-                "memory backend 'postgres' requires [storage.provider.config].db_url (or dbURL)",
-            )?;
-
-        let memory = PostgresMemory::new(
-            db_url,
-            &storage_provider.schema,
-            &storage_provider.table,
-            storage_provider.connect_timeout_secs,
-            Some(storage_provider.pgvector_enabled),
-            Some(storage_provider.pgvector_dimensions),
-        )?;
-        Ok(Box::new(memory))
-    }
-
-    #[cfg(not(feature = "memory-postgres"))]
-    fn build_postgres_memory(
-        _storage_provider: Option<&StorageProviderConfig>,
-    ) -> anyhow::Result<Box<dyn Memory>> {
-        anyhow::bail!(
-            "memory backend 'postgres' requested but this build was compiled without `memory-postgres`; rebuild with `--features memory-postgres`"
-        );
-    }
-
     if matches!(backend_kind, MemoryBackendKind::Muninndb) {
         let url = config
             .muninndb

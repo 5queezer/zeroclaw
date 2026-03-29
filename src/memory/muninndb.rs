@@ -2,6 +2,7 @@ use super::traits::{Memory, MemoryCategory, MemoryEntry};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
 use urlencoding::encode as urlencode;
 
 /// MuninnDB cognitive memory backend.
@@ -351,7 +352,7 @@ impl Memory for MuninndbMemory {
         // Build query with optional server-side tag filter for category.
         let mut path = format!("/api/engrams?vault={}&limit=200", urlencode(&self.vault));
         if let Some(cat) = category {
-            path.push_str(&format!("&tags={}", urlencode(&Self::category_tag(cat))));
+            let _ = write!(path, "&tags={}", urlencode(&Self::category_tag(cat)));
         }
 
         let resp = self
