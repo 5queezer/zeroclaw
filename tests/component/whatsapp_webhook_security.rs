@@ -100,9 +100,7 @@ fn whatsapp_signature_rejects_empty_signature() {
     let secret = "test_app_secret";
     let body = b"test payload";
 
-    assert!(!hrafn::gateway::verify_whatsapp_signature(
-        secret, body, ""
-    ));
+    assert!(!hrafn::gateway::verify_whatsapp_signature(secret, body, ""));
 }
 
 #[test]

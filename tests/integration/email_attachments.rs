@@ -1,6 +1,6 @@
-use mail_parser::{MessageParser, MimeHeaders};
 use hrafn::channels::media_pipeline::MediaAttachment;
 use hrafn::channels::traits::SendMessage;
+use mail_parser::{MessageParser, MimeHeaders};
 
 /// Test that extract_attachments correctly parses binary attachments from multipart MIME
 #[test]

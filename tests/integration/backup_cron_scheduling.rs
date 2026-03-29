@@ -1,7 +1,7 @@
-use tempfile::TempDir;
 use hrafn::config::Config;
 use hrafn::config::schema::{CronJobDecl, CronScheduleDecl};
 use hrafn::cron::{JobType, Schedule, get_job, list_jobs, sync_declarative_jobs};
+use tempfile::TempDir;
 
 fn test_config(tmp: &TempDir, schedule_cron: Option<String>) -> Config {
     let mut config = Config {

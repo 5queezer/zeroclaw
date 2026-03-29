@@ -67,11 +67,7 @@ pub fn ensure_firmware_dir() -> Result<PathBuf> {
 
     let base = BaseDirs::new().ok_or_else(|| anyhow::anyhow!("cannot determine home directory"))?;
 
-    let firmware_dir = base
-        .home_dir()
-        .join(".hrafn")
-        .join("firmware")
-        .join("pico");
+    let firmware_dir = base.home_dir().join(".hrafn").join("firmware").join("pico");
     std::fs::create_dir_all(&firmware_dir)?;
 
     // UF2 — validate magic before writing so a broken stub is caught early.

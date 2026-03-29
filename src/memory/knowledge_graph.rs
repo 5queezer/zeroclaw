@@ -758,13 +758,7 @@ mod tests {
     fn expert_ranking_by_authored_contributions() {
         let (_tmp, graph) = test_graph();
         let expert = graph
-            .add_node(
-                NodeType::Expert,
-                "hrafn_user",
-                "Backend expert",
-                &[],
-                None,
-            )
+            .add_node(NodeType::Expert, "hrafn_user", "Backend expert", &[], None)
             .unwrap();
         let p1 = graph
             .add_node(

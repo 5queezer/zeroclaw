@@ -6,8 +6,7 @@ use tracing::{info, warn};
 
 const GITHUB_RELEASES_LATEST_URL: &str =
     "https://api.github.com/repos/5queezer/hrafn/releases/latest";
-const GITHUB_RELEASES_TAG_URL: &str =
-    "https://api.github.com/repos/5queezer/hrafn/releases/tags";
+const GITHUB_RELEASES_TAG_URL: &str = "https://api.github.com/repos/5queezer/hrafn/releases/tags";
 
 #[derive(Debug)]
 pub struct UpdateInfo {

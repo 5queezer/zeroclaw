@@ -829,4 +829,4 @@ mindmap
 
 ---
 
-*Generated for Hrafn v0.1.0 - Architecture Documentation*
+Generated for Hrafn v0.1.0 - Architecture Documentation

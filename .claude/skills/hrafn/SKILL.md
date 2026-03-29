@@ -228,18 +228,21 @@ Response includes `{"token": "..."}` — save this for subsequent requests.
 
 Here are multi-step sequences you're likely to need:
 
-**"Is my agent healthy?"**
+### Is my agent healthy?
+
 1. Run `hrafn status` — check provider, model, channels
 2. Run `hrafn doctor` — check connectivity, diagnose issues
 3. If gateway needed: `curl -sf http://127.0.0.1:42617/health`
 
-**"Set up a new channel"**
+### Set up a new channel
+
 1. Read the current config: `cat ~/.hrafn/config.toml`
 2. Add the channel config (edit the TOML)
 3. Restart: `hrafn service restart` (or restart daemon manually)
 4. Verify: `hrafn channels doctor`
 
-**"Switch to a different model"**
+### Switch to a different model
+
 1. Check available: `hrafn models list`
 2. Set it: `hrafn models set <provider/model>`
 3. Verify: `hrafn status`

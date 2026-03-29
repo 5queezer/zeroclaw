@@ -8730,10 +8730,7 @@ BTC is currently around $65,000 based on latest tool output."#
         assert!(prompt.contains("### SOUL.md"), "missing SOUL.md header");
         assert!(prompt.contains("Be helpful"), "missing SOUL content");
         assert!(prompt.contains("### IDENTITY.md"), "missing IDENTITY.md");
-        assert!(
-            prompt.contains("Name: Hrafn"),
-            "missing IDENTITY content"
-        );
+        assert!(prompt.contains("Name: Hrafn"), "missing IDENTITY content");
         assert!(prompt.contains("### USER.md"), "missing USER.md");
         assert!(prompt.contains("### AGENTS.md"), "missing AGENTS.md");
         assert!(prompt.contains("### TOOLS.md"), "missing TOOLS.md");
@@ -10317,10 +10314,7 @@ This is an example JSON object for profile settings."#;
             SYSTEMD_STATUS_ARGS,
             ["--user", "is-active", "hrafn.service"]
         );
-        assert_eq!(
-            SYSTEMD_RESTART_ARGS,
-            ["--user", "restart", "hrafn.service"]
-        );
+        assert_eq!(SYSTEMD_RESTART_ARGS, ["--user", "restart", "hrafn.service"]);
     }
 
     #[test]
