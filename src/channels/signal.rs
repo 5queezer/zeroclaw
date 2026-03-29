@@ -81,6 +81,11 @@ impl SignalChannel {
         ignore_attachments: bool,
         ignore_stories: bool,
     ) -> Self {
+        if allowed_from.iter().any(|u| u == "*") {
+            tracing::warn!(
+                "Signal channel: wildcard '*' in allowed_from — ALL senders can interact with the agent"
+            );
+        }
         let http_url = http_url.trim_end_matches('/').to_string();
         Self {
             http_url,

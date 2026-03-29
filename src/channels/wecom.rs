@@ -12,6 +12,11 @@ pub struct WeComChannel {
 
 impl WeComChannel {
     pub fn new(webhook_key: String, allowed_users: Vec<String>) -> Self {
+        if allowed_users.iter().any(|u| u == "*") {
+            tracing::warn!(
+                "WeCom channel: wildcard '*' in allowed_users — ALL senders can interact with the agent"
+            );
+        }
         Self {
             webhook_key,
             allowed_users,

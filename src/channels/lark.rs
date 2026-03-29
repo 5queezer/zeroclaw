@@ -435,6 +435,11 @@ impl LarkChannel {
         mention_only: bool,
         platform: LarkPlatform,
     ) -> Self {
+        if allowed_users.iter().any(|u| u == "*") {
+            tracing::warn!(
+                "Lark channel: wildcard '*' in allowed_users — ALL senders can interact with the agent"
+            );
+        }
         Self {
             app_id,
             app_secret,

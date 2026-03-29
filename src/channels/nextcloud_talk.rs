@@ -33,6 +33,11 @@ impl NextcloudTalkChannel {
         allowed_users: Vec<String>,
         proxy_url: Option<String>,
     ) -> Self {
+        if allowed_users.iter().any(|u| u == "*") {
+            tracing::warn!(
+                "Nextcloud Talk channel: wildcard '*' in allowed_users — ALL senders can interact with the agent"
+            );
+        }
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             app_token,

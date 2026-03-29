@@ -218,11 +218,16 @@ impl MatrixChannel {
         let homeserver = homeserver.trim_end_matches('/').to_string();
         let access_token = access_token.trim().to_string();
         let room_id = room_id.trim().to_string();
-        let allowed_users = allowed_users
+        let allowed_users: Vec<String> = allowed_users
             .into_iter()
             .map(|user| user.trim().to_string())
             .filter(|user| !user.is_empty())
             .collect();
+        if allowed_users.iter().any(|u| u == "*") {
+            tracing::warn!(
+                "Matrix channel: wildcard '*' in allowed_users — ALL senders can interact with the agent"
+            );
+        }
         let allowed_rooms = allowed_rooms
             .into_iter()
             .map(|room| room.trim().to_string())

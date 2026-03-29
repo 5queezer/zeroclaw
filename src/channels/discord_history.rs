@@ -38,6 +38,11 @@ impl DiscordHistoryChannel {
         store_dms: bool,
         respond_to_dms: bool,
     ) -> Self {
+        if allowed_users.iter().any(|u| u == "*") {
+            tracing::warn!(
+                "Discord History channel: wildcard '*' in allowed_users — ALL senders can interact with the agent"
+            );
+        }
         Self {
             bot_token,
             guild_id,

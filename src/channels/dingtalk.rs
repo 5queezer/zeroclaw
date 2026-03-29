@@ -31,6 +31,11 @@ struct GatewayResponse {
 
 impl DingTalkChannel {
     pub fn new(client_id: String, client_secret: String, allowed_users: Vec<String>) -> Self {
+        if allowed_users.iter().any(|u| u == "*") {
+            tracing::warn!(
+                "DingTalk channel: wildcard '*' in allowed_users — ALL senders can interact with the agent"
+            );
+        }
         Self {
             client_id,
             client_secret,

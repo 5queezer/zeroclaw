@@ -77,6 +77,11 @@ pub struct IMessageChannel {
 
 impl IMessageChannel {
     pub fn new(allowed_contacts: Vec<String>) -> Self {
+        if allowed_contacts.iter().any(|u| u == "*") {
+            tracing::warn!(
+                "iMessage channel: wildcard '*' in allowed_contacts — ALL senders can interact with the agent"
+            );
+        }
         Self {
             allowed_contacts,
             poll_interval_secs: 3,

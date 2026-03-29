@@ -48,6 +48,11 @@ impl DiscordChannel {
         listen_to_bots: bool,
         mention_only: bool,
     ) -> Self {
+        if allowed_users.iter().any(|u| u == "*") {
+            tracing::warn!(
+                "Discord channel: wildcard '*' in allowed_users — ALL senders can interact with the agent"
+            );
+        }
         Self {
             bot_token,
             guild_id,

@@ -161,6 +161,11 @@ impl SlackChannel {
         channel_ids: Vec<String>,
         allowed_users: Vec<String>,
     ) -> Self {
+        if allowed_users.iter().any(|u| u == "*") {
+            tracing::warn!(
+                "Slack channel: wildcard '*' in allowed_users — ALL senders can interact with the agent"
+            );
+        }
         Self {
             bot_token,
             app_token,

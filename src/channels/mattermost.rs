@@ -35,6 +35,11 @@ impl MattermostChannel {
         thread_replies: bool,
         mention_only: bool,
     ) -> Self {
+        if allowed_users.iter().any(|u| u == "*") {
+            tracing::warn!(
+                "Mattermost channel: wildcard '*' in allowed_users — ALL senders can interact with the agent"
+            );
+        }
         // Ensure base_url doesn't have a trailing slash for consistent path joining
         let base_url = base_url.trim_end_matches('/').to_string();
         Self {

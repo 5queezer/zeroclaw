@@ -304,6 +304,11 @@ pub struct QQChannel {
 
 impl QQChannel {
     pub fn new(app_id: String, app_secret: String, allowed_users: Vec<String>) -> Self {
+        if allowed_users.iter().any(|u| u == "*") {
+            tracing::warn!(
+                "QQ channel: wildcard '*' in allowed_users — ALL senders can interact with the agent"
+            );
+        }
         Self {
             app_id,
             app_secret,

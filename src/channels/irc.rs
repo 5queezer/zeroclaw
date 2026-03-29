@@ -237,6 +237,11 @@ pub struct IrcChannelConfig {
 
 impl IrcChannel {
     pub fn new(cfg: IrcChannelConfig) -> Self {
+        if cfg.allowed_users.iter().any(|u| u == "*") {
+            tracing::warn!(
+                "IRC channel: wildcard '*' in allowed_users — ALL senders can interact with the agent"
+            );
+        }
         let username = cfg.username.unwrap_or_else(|| cfg.nickname.clone());
         Self {
             server: cfg.server,

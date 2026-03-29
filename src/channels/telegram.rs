@@ -352,6 +352,11 @@ enum EditMessageResult {
 impl TelegramChannel {
     pub fn new(bot_token: String, allowed_users: Vec<String>, mention_only: bool) -> Self {
         let normalized_allowed = Self::normalize_allowed_users(allowed_users);
+        if normalized_allowed.iter().any(|u| u == "*") {
+            tracing::warn!(
+                "Telegram channel: wildcard '*' in allowed_users — ALL senders can interact with the agent"
+            );
+        }
         let pairing = if normalized_allowed.is_empty() {
             let guard = PairingGuard::new(true, &[]);
             if let Some(code) = guard.pairing_code() {

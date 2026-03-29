@@ -22,6 +22,11 @@ const DEDUP_CAPACITY: usize = 10_000;
 
 impl TwitterChannel {
     pub fn new(bearer_token: String, allowed_users: Vec<String>) -> Self {
+        if allowed_users.iter().any(|u| u == "*") {
+            tracing::warn!(
+                "Twitter channel: wildcard '*' in allowed_users — ALL senders can interact with the agent"
+            );
+        }
         Self {
             bearer_token,
             allowed_users,
