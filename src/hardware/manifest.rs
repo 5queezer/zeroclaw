@@ -1,4 +1,4 @@
-//! Plugin manifest — `~/.zeroclaw/tools/<name>/tool.toml` schema.
+//! Plugin manifest — `~/.hrafn/tools/<name>/tool.toml` schema.
 //!
 //! Each user plugin lives in its own subdirectory and carries a `tool.toml`
 //! that describes the tool, how to invoke it, and what parameters it accepts.
@@ -58,7 +58,7 @@ pub struct ToolMeta {
     pub description: String,
 }
 
-/// Execution configuration — how ZeroClaw spawns the tool.
+/// Execution configuration — how Hrafn spawns the tool.
 #[derive(Debug, Deserialize)]
 pub struct ExecConfig {
     /// Path to the binary, relative to the plugin directory.
@@ -70,7 +70,7 @@ pub struct ExecConfig {
 
 /// Optional transport hint for the tool.
 ///
-/// When present, ZeroClaw will prefer the named transport kind
+/// When present, Hrafn will prefer the named transport kind
 /// and can enforce device presence before calling the tool.
 #[derive(Debug, Deserialize)]
 pub struct TransportConfig {

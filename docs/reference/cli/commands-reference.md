@@ -1,6 +1,6 @@
-# ZeroClaw Commands Reference
+# Hrafn Commands Reference
 
-This reference is derived from the current CLI surface (`zeroclaw --help`).
+This reference is derived from the current CLI surface (`hrafn --help`).
 
 Last verified: **March 26, 2026**.
 
@@ -33,13 +33,13 @@ Last verified: **March 26, 2026**.
 
 ### `onboard`
 
-- `zeroclaw onboard`
-- `zeroclaw onboard --channels-only`
-- `zeroclaw onboard --force`
-- `zeroclaw onboard --reinit`
-- `zeroclaw onboard --api-key <KEY> --provider <ID> --memory <sqlite|lucid|markdown|none>`
-- `zeroclaw onboard --api-key <KEY> --provider <ID> --model <MODEL_ID> --memory <sqlite|lucid|markdown|none>`
-- `zeroclaw onboard --api-key <KEY> --provider <ID> --model <MODEL_ID> --memory <sqlite|lucid|markdown|none> --force`
+- `hrafn onboard`
+- `hrafn onboard --channels-only`
+- `hrafn onboard --force`
+- `hrafn onboard --reinit`
+- `hrafn onboard --api-key <KEY> --provider <ID> --memory <sqlite|lucid|markdown|none>`
+- `hrafn onboard --api-key <KEY> --provider <ID> --model <MODEL_ID> --memory <sqlite|lucid|markdown|none>`
+- `hrafn onboard --api-key <KEY> --provider <ID> --model <MODEL_ID> --memory <sqlite|lucid|markdown|none> --force`
 
 `onboard` safety behavior:
 
@@ -47,15 +47,15 @@ Last verified: **March 26, 2026**.
   - Full onboarding (overwrite `config.toml`)
   - Provider-only update (update provider/model/API key while preserving existing channels, tunnel, memory, hooks, and other settings)
 - In non-interactive environments, existing `config.toml` causes a safe refusal unless `--force` is passed.
-- Use `zeroclaw onboard --channels-only` when you only need to rotate channel tokens/allowlists.
-- Use `zeroclaw onboard --reinit` to start fresh. This backs up your existing config directory with a timestamp suffix and creates a new configuration from scratch.
+- Use `hrafn onboard --channels-only` when you only need to rotate channel tokens/allowlists.
+- Use `hrafn onboard --reinit` to start fresh. This backs up your existing config directory with a timestamp suffix and creates a new configuration from scratch.
 
 ### `agent`
 
-- `zeroclaw agent`
-- `zeroclaw agent -m "Hello"`
-- `zeroclaw agent --provider <ID> --model <MODEL> --temperature <0.0-2.0>`
-- `zeroclaw agent --peripheral <board:path>`
+- `hrafn agent`
+- `hrafn agent -m "Hello"`
+- `hrafn agent --provider <ID> --model <MODEL> --temperature <0.0-2.0>`
+- `hrafn agent --peripheral <board:path>`
 
 Tip:
 
@@ -63,9 +63,9 @@ Tip:
 
 ### `acp`
 
-- `zeroclaw acp`
-- `zeroclaw acp --max-sessions <N>`
-- `zeroclaw acp --session-timeout <SECONDS>`
+- `hrafn acp`
+- `hrafn acp --max-sessions <N>`
+- `hrafn acp --session-timeout <SECONDS>`
 
 Start the ACP (Agent Control Protocol) server for IDE and tool integration.
 
@@ -77,21 +77,21 @@ Start the ACP (Agent Control Protocol) server for IDE and tool integration.
 
 ### `gateway` / `daemon`
 
-- `zeroclaw gateway [--host <HOST>] [--port <PORT>]`
-- `zeroclaw daemon [--host <HOST>] [--port <PORT>]`
+- `hrafn gateway [--host <HOST>] [--port <PORT>]`
+- `hrafn daemon [--host <HOST>] [--port <PORT>]`
 
 ### `estop`
 
-- `zeroclaw estop` (engage `kill-all`)
-- `zeroclaw estop --level network-kill`
-- `zeroclaw estop --level domain-block --domain "*.chase.com" [--domain "*.paypal.com"]`
-- `zeroclaw estop --level tool-freeze --tool shell [--tool browser]`
-- `zeroclaw estop status`
-- `zeroclaw estop resume`
-- `zeroclaw estop resume --network`
-- `zeroclaw estop resume --domain "*.chase.com"`
-- `zeroclaw estop resume --tool shell`
-- `zeroclaw estop resume --otp <123456>`
+- `hrafn estop` (engage `kill-all`)
+- `hrafn estop --level network-kill`
+- `hrafn estop --level domain-block --domain "*.chase.com" [--domain "*.paypal.com"]`
+- `hrafn estop --level tool-freeze --tool shell [--tool browser]`
+- `hrafn estop status`
+- `hrafn estop resume`
+- `hrafn estop resume --network`
+- `hrafn estop resume --domain "*.chase.com"`
+- `hrafn estop resume --tool shell`
+- `hrafn estop resume --otp <123456>`
 
 Notes:
 
@@ -101,23 +101,23 @@ Notes:
 
 ### `service`
 
-- `zeroclaw service install`
-- `zeroclaw service start`
-- `zeroclaw service stop`
-- `zeroclaw service restart`
-- `zeroclaw service status`
-- `zeroclaw service uninstall`
+- `hrafn service install`
+- `hrafn service start`
+- `hrafn service stop`
+- `hrafn service restart`
+- `hrafn service status`
+- `hrafn service uninstall`
 
 ### `cron`
 
-- `zeroclaw cron list`
-- `zeroclaw cron add <expr> [--tz <IANA_TZ>] <command>`
-- `zeroclaw cron add-at <rfc3339_timestamp> <command>`
-- `zeroclaw cron add-every <every_ms> <command>`
-- `zeroclaw cron once <delay> <command>`
-- `zeroclaw cron remove <id>`
-- `zeroclaw cron pause <id>`
-- `zeroclaw cron resume <id>`
+- `hrafn cron list`
+- `hrafn cron add <expr> [--tz <IANA_TZ>] <command>`
+- `hrafn cron add-at <rfc3339_timestamp> <command>`
+- `hrafn cron add-every <every_ms> <command>`
+- `hrafn cron once <delay> <command>`
+- `hrafn cron remove <id>`
+- `hrafn cron pause <id>`
+- `hrafn cron resume <id>`
 
 Notes:
 
@@ -126,29 +126,29 @@ Notes:
 
 ### `models`
 
-- `zeroclaw models refresh`
-- `zeroclaw models refresh --provider <ID>`
-- `zeroclaw models refresh --force`
+- `hrafn models refresh`
+- `hrafn models refresh --provider <ID>`
+- `hrafn models refresh --force`
 
 `models refresh` currently supports live catalog refresh for provider IDs: `openrouter`, `openai`, `anthropic`, `groq`, `mistral`, `deepseek`, `xai`, `together-ai`, `gemini`, `ollama`, `llamacpp`, `sglang`, `vllm`, `astrai`, `venice`, `fireworks`, `cohere`, `moonshot`, `glm`, `zai`, `qwen`, and `nvidia`.
 
 ### `doctor`
 
-- `zeroclaw doctor`
-- `zeroclaw doctor models [--provider <ID>] [--use-cache]`
-- `zeroclaw doctor traces [--limit <N>] [--event <TYPE>] [--contains <TEXT>]`
-- `zeroclaw doctor traces --id <TRACE_ID>`
+- `hrafn doctor`
+- `hrafn doctor models [--provider <ID>] [--use-cache]`
+- `hrafn doctor traces [--limit <N>] [--event <TYPE>] [--contains <TEXT>]`
+- `hrafn doctor traces --id <TRACE_ID>`
 
 `doctor traces` reads runtime tool/model diagnostics from `observability.runtime_trace_path`.
 
 ### `channel`
 
-- `zeroclaw channel list`
-- `zeroclaw channel start`
-- `zeroclaw channel doctor`
-- `zeroclaw channel bind-telegram <IDENTITY>`
-- `zeroclaw channel add <type> <json>`
-- `zeroclaw channel remove <name>`
+- `hrafn channel list`
+- `hrafn channel start`
+- `hrafn channel doctor`
+- `hrafn channel bind-telegram <IDENTITY>`
+- `hrafn channel add <type> <json>`
+- `hrafn channel remove <name>`
 
 Runtime in-chat commands (Telegram/Discord while channel server is running):
 
@@ -169,14 +169,14 @@ Channel runtime also watches `config.toml` and hot-applies updates to:
 
 ### `integrations`
 
-- `zeroclaw integrations info <name>`
+- `hrafn integrations info <name>`
 
 ### `skills`
 
-- `zeroclaw skills list`
-- `zeroclaw skills audit <source_or_name>`
-- `zeroclaw skills install <source>`
-- `zeroclaw skills remove <name>`
+- `hrafn skills list`
+- `hrafn skills audit <source_or_name>`
+- `hrafn skills install <source>`
+- `hrafn skills remove <name>`
 
 `<source>` accepts git remotes (`https://...`, `http://...`, `ssh://...`, and `git@host:owner/repo.git`) or a local filesystem path.
 
@@ -192,43 +192,43 @@ Skill manifests (`SKILL.toml`) support `prompts` and `[[tools]]`; both are injec
 
 ### `migrate`
 
-- `zeroclaw migrate openclaw [--source <path>] [--dry-run]`
+- `hrafn migrate openclaw [--source <path>] [--dry-run]`
 
 ### `config`
 
-- `zeroclaw config schema`
+- `hrafn config schema`
 
 `config schema` prints a JSON Schema (draft 2020-12) for the full `config.toml` contract to stdout.
 
 ### `completions`
 
-- `zeroclaw completions bash`
-- `zeroclaw completions fish`
-- `zeroclaw completions zsh`
-- `zeroclaw completions powershell`
-- `zeroclaw completions elvish`
+- `hrafn completions bash`
+- `hrafn completions fish`
+- `hrafn completions zsh`
+- `hrafn completions powershell`
+- `hrafn completions elvish`
 
 `completions` is stdout-only by design so scripts can be sourced directly without log/warning contamination.
 
 ### `hardware`
 
-- `zeroclaw hardware discover`
-- `zeroclaw hardware introspect <path>`
-- `zeroclaw hardware info [--chip <chip_name>]`
+- `hrafn hardware discover`
+- `hrafn hardware introspect <path>`
+- `hrafn hardware info [--chip <chip_name>]`
 
 ### `peripheral`
 
-- `zeroclaw peripheral list`
-- `zeroclaw peripheral add <board> <path>`
-- `zeroclaw peripheral flash [--port <serial_port>]`
-- `zeroclaw peripheral setup-uno-q [--host <ip_or_host>]`
-- `zeroclaw peripheral flash-nucleo`
+- `hrafn peripheral list`
+- `hrafn peripheral add <board> <path>`
+- `hrafn peripheral flash [--port <serial_port>]`
+- `hrafn peripheral setup-uno-q [--host <ip_or_host>]`
+- `hrafn peripheral flash-nucleo`
 
 ## Validation Tip
 
 To verify docs against your current binary quickly:
 
 ```bash
-zeroclaw --help
-zeroclaw <command> --help
+hrafn --help
+hrafn <command> --help
 ```

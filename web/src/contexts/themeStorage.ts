@@ -3,7 +3,7 @@ import { uiFontStacks, monoFontStacks } from './ThemeContextDef';
 import type { ColorThemeId } from './colorThemes';
 import { colorThemeMap } from './colorThemes';
 
-export const STORAGE_KEY = 'zeroclaw-theme';
+export const STORAGE_KEY = 'hrafn-theme';
 
 export interface StoredTheme {
   theme: ThemeMode;

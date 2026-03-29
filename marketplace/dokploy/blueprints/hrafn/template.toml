@@ -6,11 +6,11 @@ api_key = "${password:64}"
 env = [
   "API_KEY=${api_key}",
   "PROVIDER=openrouter",
-  "ZEROCLAW_ALLOW_PUBLIC_BIND=true",
-  "ZEROCLAW_GATEWAY_PORT=42617"
+  "HRAFN_ALLOW_PUBLIC_BIND=true",
+  "HRAFN_GATEWAY_PORT=42617"
 ]
 
 [[config.domains]]
-serviceName = "zeroclaw"
+serviceName = "hrafn"
 port = 42617
 host = "${main_domain}"

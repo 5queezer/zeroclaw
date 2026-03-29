@@ -1,5 +1,5 @@
 /**
- * Color theme palettes for the ZeroClaw dashboard.
+ * Color theme palettes for the Hrafn dashboard.
  *
  * Each theme defines the full set of --pc-* CSS variables.
  * Themes are grouped by scheme ('dark' | 'light') so the system

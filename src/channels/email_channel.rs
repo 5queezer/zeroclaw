@@ -68,7 +68,7 @@ pub struct EmailConfig {
     /// Allowed sender addresses/domains (empty = deny all, ["*"] = allow all)
     #[serde(default)]
     pub allowed_senders: Vec<String>,
-    /// Default subject line for outgoing emails (default: "ZeroClaw Message")
+    /// Default subject line for outgoing emails (default: "Hrafn Message")
     #[serde(default = "default_subject")]
     pub default_subject: String,
     /// Maximum total attachment size in bytes (default: 25 MB).
@@ -102,7 +102,7 @@ fn default_true() -> bool {
     true
 }
 fn default_subject() -> String {
-    "ZeroClaw Message".into()
+    "Hrafn Message".into()
 }
 fn default_max_attachment_bytes() -> usize {
     25 * 1024 * 1024
@@ -1073,7 +1073,7 @@ mod tests {
         assert_eq!(config.smtp_port, 465); // default
         assert!(config.smtp_tls); // default
         assert_eq!(config.idle_timeout_secs, 1740); // default
-        assert_eq!(config.default_subject, "ZeroClaw Message"); // default
+        assert_eq!(config.default_subject, "Hrafn Message"); // default
     }
 
     #[test]

@@ -265,8 +265,8 @@ impl Channel for DiscordHistoryChannel {
                 "intents": 37377,
                 "properties": {
                     "os": "linux",
-                    "browser": "zeroclaw",
-                    "device": "zeroclaw"
+                    "browser": "hrafn",
+                    "device": "hrafn"
                 }
             }
         });

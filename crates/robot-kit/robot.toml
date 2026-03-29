@@ -1,5 +1,5 @@
-# ZeroClaw Robot Kit Configuration
-# Copy to ~/.zeroclaw/robot.toml
+# Hrafn Robot Kit Configuration
+# Copy to ~/.hrafn/robot.toml
 
 # =============================================================================
 # DRIVE SYSTEM

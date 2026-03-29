@@ -1,6 +1,6 @@
-# ZeroClaw REST API Reference
+# Hrafn REST API Reference
 
-Complete endpoint reference for the ZeroClaw gateway HTTP API.
+Complete endpoint reference for the Hrafn gateway HTTP API.
 
 ## Table of Contents
 

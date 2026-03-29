@@ -51,11 +51,11 @@ impl NextcloudTalkChannel {
 
     /// Returns true if the given name/id belongs to this bot itself.
     ///
-    /// Prevents feedback loops where ZeroClaw reacts to its own messages.
+    /// Prevents feedback loops where Hrafn reacts to its own messages.
     fn is_bot_name(&self, name: &str) -> bool {
         let name = name.to_ascii_lowercase();
-        // Match the configured bot name, or the known bot name "zeroclaw".
-        (!self.bot_name.is_empty() && name == self.bot_name) || name == "zeroclaw"
+        // Match the configured bot name, or the known bot name "hrafn".
+        (!self.bot_name.is_empty() && name == self.bot_name) || name == "hrafn"
     }
 
     fn now_unix_secs() -> u64 {
@@ -214,7 +214,7 @@ impl NextcloudTalkChannel {
             tracing::warn!(
                 "Nextcloud Talk: ignoring message from unauthorized actor: {actor_id}. \
                 Add to channels.nextcloud_talk.allowed_users in config.toml, \
-                or run `zeroclaw onboard --channels-only` to configure interactively."
+                or run `hrafn onboard --channels-only` to configure interactively."
             );
             return messages;
         }
@@ -315,7 +315,7 @@ impl NextcloudTalkChannel {
             tracing::warn!(
                 "Nextcloud Talk: ignoring message from unauthorized actor: {actor_id}. \
                 Add to channels.nextcloud_talk.allowed_users in config.toml, \
-                or run `zeroclaw onboard --channels-only` to configure interactively."
+                or run `hrafn onboard --channels-only` to configure interactively."
             );
             return messages;
         }
@@ -476,7 +476,7 @@ mod tests {
         NextcloudTalkChannel::new(
             "https://cloud.example.com".into(),
             "app-token".into(),
-            "zeroclaw".into(),
+            "hrafn".into(),
             vec!["user_a".into()],
         )
     }
@@ -496,7 +496,7 @@ mod tests {
         let wildcard = NextcloudTalkChannel::new(
             "https://cloud.example.com".into(),
             "app-token".into(),
-            "zeroclaw".into(),
+            "hrafn".into(),
             vec!["*".into()],
         );
         assert!(wildcard.is_user_allowed("any_user"));
@@ -541,7 +541,7 @@ mod tests {
         let channel = NextcloudTalkChannel::new(
             "https://cloud.example.com".into(),
             "app-token".into(),
-            "zeroclaw".into(),
+            "hrafn".into(),
             vec!["*".into()],
         );
         // Real payload format sent by Nextcloud Talk bot webhooks.
@@ -580,15 +580,15 @@ mod tests {
         let channel = NextcloudTalkChannel::new(
             "https://cloud.example.com".into(),
             "app-token".into(),
-            "zeroclaw".into(),
+            "hrafn".into(),
             vec!["*".into()],
         );
         let payload = serde_json::json!({
             "type": "Create",
             "actor": {
                 "type": "Application",
-                "id": "bots/zeroclaw",
-                "name": "zeroclaw"
+                "id": "bots/hrafn",
+                "name": "hrafn"
             },
             "object": {
                 "type": "Note",
@@ -614,15 +614,15 @@ mod tests {
         let channel = NextcloudTalkChannel::new(
             "https://cloud.example.com".into(),
             "app-token".into(),
-            "zeroclaw".into(),
+            "hrafn".into(),
             vec!["*".into()],
         );
         let payload = serde_json::json!({
             "type": "Create",
             "actor": {
                 "type": "Person",        // <- wrong type, but name matches
-                "id": "users/zeroclaw",
-                "name": "zeroclaw"
+                "id": "users/hrafn",
+                "name": "hrafn"
             },
             "object": {
                 "type": "Note",
@@ -650,7 +650,7 @@ mod tests {
         let channel = NextcloudTalkChannel::new(
             "https://cloud.example.com".into(),
             "app-token".into(),
-            "zeroclaw".into(),
+            "hrafn".into(),
             vec!["*".into()],
         );
         let payload = serde_json::json!({
@@ -658,7 +658,7 @@ mod tests {
             "object": {"token": "room-token-123"},
             "message": {
                 "actorType": "application",
-                "actorId": "zeroclaw",
+                "actorId": "hrafn",
                 "message": "Self message"
             }
         });
@@ -675,7 +675,7 @@ mod tests {
         let channel = NextcloudTalkChannel::new(
             "https://cloud.example.com".into(),
             "app-token".into(),
-            "zeroclaw".into(),
+            "hrafn".into(),
             vec!["*".into()],
         );
         let payload = serde_json::json!({
@@ -711,7 +711,7 @@ mod tests {
         let channel = NextcloudTalkChannel::new(
             "https://cloud.example.com".into(),
             "app-token".into(),
-            "zeroclaw".into(),
+            "hrafn".into(),
             vec!["*".into()],
         );
         let payload = serde_json::json!({
@@ -750,7 +750,7 @@ mod tests {
         let channel = NextcloudTalkChannel::new(
             "https://cloud.example.com".into(),
             "app-token".into(),
-            "zeroclaw".into(),
+            "hrafn".into(),
             vec!["*".into()],
         );
         let payload = serde_json::json!({
@@ -774,7 +774,7 @@ mod tests {
         let channel = NextcloudTalkChannel::new(
             "https://cloud.example.com".into(),
             "app-token".into(),
-            "zeroclaw".into(),
+            "hrafn".into(),
             vec!["*".into()],
         );
         let payload = serde_json::json!({
