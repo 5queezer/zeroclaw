@@ -181,7 +181,28 @@ pub fn load_skills_from_directory(skills_dir: &Path, allow_scripts: bool) -> Vec
         return Vec::new();
     }
 
-    let lockfile = integrity::read_lockfile(skills_dir).unwrap_or_default();
+    let lockfile = match integrity::read_lockfile(skills_dir) {
+        Ok(lf) => lf,
+        Err(err) => {
+            // Lockfile exists but cannot be parsed — fail closed.
+            let lf_path = integrity::lockfile_path(skills_dir);
+            if lf_path.exists() {
+                tracing::error!(
+                    "corrupt or unreadable skills lockfile at {} — refusing to load skills: {err}",
+                    lf_path.display(),
+                );
+                eprintln!(
+                    "error: corrupt skills lockfile at {} — all skills from this directory are disabled. \
+                     Delete or fix the lockfile, then run `hrafn skills lock`.",
+                    lf_path.display(),
+                );
+                return Vec::new();
+            }
+            // Lockfile doesn't exist — proceed with empty lockfile (backwards compat).
+            integrity::SkillsLockfile::default()
+        }
+    };
+    let lockfile_active = !lockfile.skills.is_empty();
 
     let mut skills = Vec::new();
 
@@ -231,16 +252,21 @@ pub fn load_skills_from_directory(skills_dir: &Path, allow_scripts: bool) -> Vec
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown");
-        if !lockfile.skills.is_empty() {
+        if lockfile_active {
             match integrity::verify_skill(&lockfile, skill_name, &manifest_file) {
                 Ok(integrity::VerifyResult::Ok) => {}
                 Ok(integrity::VerifyResult::NotLocked) => {
-                    // Warn but still load — refusing unlocked skills would break
-                    // existing setups when the first skill is installed with a lockfile.
                     tracing::warn!(
-                        "skill '{}' is not present in skills.lock — run `hrafn skills lock` to add it",
+                        "skill '{}' is not present in skills.lock — refusing to load. \
+                         Run `hrafn skills lock` to add it",
                         skill_name,
                     );
+                    eprintln!(
+                        "warning: skill '{}' skipped: not in skills.lock. \
+                         Run `hrafn skills lock` to register it.",
+                        skill_name,
+                    );
+                    continue;
                 }
                 Ok(integrity::VerifyResult::Mismatch { expected, actual }) => {
                     tracing::warn!(
@@ -293,7 +319,26 @@ fn load_open_skills_from_directory(skills_dir: &Path, allow_scripts: bool) -> Ve
         return Vec::new();
     }
 
-    let lockfile = integrity::read_lockfile(skills_dir).unwrap_or_default();
+    let lockfile = match integrity::read_lockfile(skills_dir) {
+        Ok(lf) => lf,
+        Err(err) => {
+            let lf_path = integrity::lockfile_path(skills_dir);
+            if lf_path.exists() {
+                tracing::error!(
+                    "corrupt or unreadable open-skills lockfile at {} — refusing to load skills: {err}",
+                    lf_path.display(),
+                );
+                eprintln!(
+                    "error: corrupt open-skills lockfile at {} — all open-skills from this directory are disabled. \
+                     Delete or fix the lockfile, then run `hrafn skills lock`.",
+                    lf_path.display(),
+                );
+                return Vec::new();
+            }
+            integrity::SkillsLockfile::default()
+        }
+    };
+    let lockfile_active = !lockfile.skills.is_empty();
 
     let mut skills = Vec::new();
 
@@ -342,11 +387,21 @@ fn load_open_skills_from_directory(skills_dir: &Path, allow_scripts: bool) -> Ve
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown");
-        if !lockfile.skills.is_empty() {
+        if lockfile_active {
             match integrity::verify_skill(&lockfile, skill_name, &manifest_file) {
                 Ok(integrity::VerifyResult::Ok) => {}
                 Ok(integrity::VerifyResult::NotLocked) => {
-                    tracing::warn!("open-skill '{}' is not present in skills.lock", skill_name,);
+                    tracing::warn!(
+                        "open-skill '{}' is not present in skills.lock — refusing to load. \
+                         Run `hrafn skills lock` to add it",
+                        skill_name,
+                    );
+                    eprintln!(
+                        "warning: open-skill '{}' skipped: not in skills.lock. \
+                         Run `hrafn skills lock` to register it.",
+                        skill_name,
+                    );
+                    continue;
                 }
                 Ok(integrity::VerifyResult::Mismatch { expected, actual }) => {
                     tracing::warn!(
