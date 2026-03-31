@@ -635,6 +635,52 @@ Examples:
     FlashNucleo,
 }
 
+/// Caller identity management subcommands
+#[derive(Subcommand, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum IdentityCommands {
+    /// List all registered callers
+    List,
+    /// Set trust level for a caller (owner, trusted, untrusted)
+    #[command(long_about = "\
+Set the trust level for a caller.
+
+Trust escalation (untrusted -> trusted/owner) persists across sessions \
+so the agent remembers who is authorized.
+
+Examples:
+  hrafn identity trust tg:123456 trusted
+  hrafn identity trust discord:789 owner")]
+    Trust {
+        /// Caller ID (e.g. tg:123456, discord:789)
+        caller: String,
+        /// Trust level: owner, trusted, or untrusted
+        level: String,
+    },
+    /// Add a flag to a caller (e.g. spoofing-attempt, verified)
+    #[command(long_about = "\
+Add a suspicion or status flag to a caller.
+
+Flags persist across session boundaries so the agent retains \
+behavioral observations about callers.
+
+Examples:
+  hrafn identity flag tg:123456 spoofing-attempt
+  hrafn identity flag discord:789 verified")]
+    Flag {
+        /// Caller ID
+        caller: String,
+        /// Flag to add
+        flag: String,
+    },
+    /// Remove a flag from a caller
+    Unflag {
+        /// Caller ID
+        caller: String,
+        /// Flag to remove
+        flag: String,
+    },
+}
+
 /// SOP management subcommands
 #[cfg(feature = "desktop")]
 #[derive(Subcommand, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -118,8 +118,9 @@ use config::Config;
 
 // Re-export so binary modules can use crate::<CommandEnum> while keeping a single source of truth.
 pub use hrafn::{
-    ChannelCommands, CronCommands, GatewayCommands, HardwareCommands, IntegrationCommands,
-    MigrateCommands, PeripheralCommands, ServiceCommands, SkillCommands, SopCommands,
+    ChannelCommands, CronCommands, GatewayCommands, HardwareCommands, IdentityCommands,
+    IntegrationCommands, MigrateCommands, PeripheralCommands, ServiceCommands, SkillCommands,
+    SopCommands,
 };
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -483,6 +484,24 @@ Examples:
     Memory {
         #[command(subcommand)]
         memory_command: MemoryCommands,
+    },
+
+    /// Manage persistent caller identity registry
+    #[command(long_about = "\
+Manage the persistent caller identity registry.
+
+The caller registry tracks trust levels and suspicion flags across \
+session boundaries, preventing trust-reset attacks where an attacker \
+starts a new session to shed accumulated suspicion.
+
+Examples:
+  hrafn identity list                         # list all callers
+  hrafn identity trust tg:123456 trusted      # promote caller
+  hrafn identity flag tg:123456 spoofing-attempt  # add flag
+  hrafn identity unflag tg:123456 spoofing-attempt")]
+    Identity {
+        #[command(subcommand)]
+        identity_command: IdentityCommands,
     },
 
     /// Manage configuration
@@ -1432,6 +1451,10 @@ async fn main() -> Result<()> {
             memory::cli::handle_command(memory_command, &config).await
         }
 
+        Commands::Identity { identity_command } => {
+            handle_identity_command(identity_command, &config)
+        }
+
         Commands::Auth { auth_command } => handle_auth_command(auth_command, &config).await,
 
         Commands::Hardware { hardware_command } => {
@@ -1658,6 +1681,65 @@ async fn main() -> Result<()> {
             }
         },
     }
+}
+
+fn handle_identity_command(command: IdentityCommands, config: &Config) -> Result<()> {
+    use identity::registry::{self, TrustLevel};
+
+    let mut reg = registry::load_registry(&config.workspace_dir)?;
+
+    match command {
+        IdentityCommands::List => {
+            let entries = reg.list();
+            if entries.is_empty() {
+                println!("No callers registered.");
+                return Ok(());
+            }
+            println!(
+                "{:<30} {:<20} {:<12} FLAGS",
+                "CALLER_ID", "DISPLAY_NAME", "TRUST"
+            );
+            for entry in entries {
+                let flags = if entry.flags.is_empty() {
+                    String::from("-")
+                } else {
+                    entry.flags.join(", ")
+                };
+                println!(
+                    "{:<30} {:<20} {:<12} {}",
+                    entry.caller_id, entry.display_name, entry.trust_level, flags
+                );
+            }
+        }
+        IdentityCommands::Trust { caller, level } => {
+            let trust_level = TrustLevel::parse(&level).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Invalid trust level '{}'. Use: owner, trusted, or untrusted",
+                    level
+                )
+            })?;
+            reg.set_trust(&caller, trust_level);
+            registry::save_registry(&config.workspace_dir, &reg)?;
+            println!("Set trust for '{}' to {}", caller, trust_level);
+        }
+        IdentityCommands::Flag { caller, flag } => {
+            reg.add_flag(&caller, &flag);
+            registry::save_registry(&config.workspace_dir, &reg)?;
+            println!("Added flag '{}' to caller '{}'", flag, caller);
+        }
+        IdentityCommands::Unflag { caller, flag } => {
+            if reg.remove_flag(&caller, &flag) {
+                registry::save_registry(&config.workspace_dir, &reg)?;
+                println!("Removed flag '{}' from caller '{}'", flag, caller);
+            } else {
+                println!(
+                    "Flag '{}' not found on caller '{}' (or caller not registered)",
+                    flag, caller
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn handle_estop_command(
