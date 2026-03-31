@@ -11,6 +11,7 @@ use std::time::{Duration, SystemTime};
 use zip::ZipArchive;
 
 mod audit;
+pub mod integrity;
 #[cfg(feature = "skill-creation")]
 pub mod creator;
 #[cfg(feature = "skill-creation")]
@@ -180,6 +181,8 @@ pub fn load_skills_from_directory(skills_dir: &Path, allow_scripts: bool) -> Vec
         return Vec::new();
     }
 
+    let lockfile = integrity::read_lockfile(skills_dir).unwrap_or_default();
+
     let mut skills = Vec::new();
 
     let Ok(entries) = std::fs::read_dir(skills_dir) else {
@@ -215,14 +218,64 @@ pub fn load_skills_from_directory(skills_dir: &Path, allow_scripts: bool) -> Vec
         let manifest_path = path.join("SKILL.toml");
         let md_path = path.join("SKILL.md");
 
-        if manifest_path.exists() {
-            if let Ok(skill) = load_skill_toml(&manifest_path) {
-                skills.push(skill);
-            }
+        let (manifest_file, is_toml) = if manifest_path.exists() {
+            (manifest_path, true)
         } else if md_path.exists() {
-            if let Ok(skill) = load_skill_md(&md_path, &path) {
+            (md_path, false)
+        } else {
+            continue;
+        };
+
+        // Verify integrity against lockfile when one exists
+        let skill_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+        if !lockfile.skills.is_empty() {
+            match integrity::verify_skill(&lockfile, skill_name, &manifest_file) {
+                Ok(integrity::VerifyResult::Ok) => {}
+                Ok(integrity::VerifyResult::NotLocked) => {
+                    tracing::warn!(
+                        "skill '{}' is not present in skills.lock — run `hrafn skills lock` to add it",
+                        skill_name,
+                    );
+                    eprintln!(
+                        "warning: skill '{}' skipped: not present in skills.lock (run `hrafn skills lock`)",
+                        skill_name,
+                    );
+                    continue;
+                }
+                Ok(integrity::VerifyResult::Mismatch { expected, actual }) => {
+                    tracing::warn!(
+                        "skill '{}' failed integrity check: expected SHA-256 {}, got {} — \
+                         run `hrafn skills lock` after reviewing changes",
+                        skill_name, expected, actual,
+                    );
+                    eprintln!(
+                        "warning: skill '{}' skipped: integrity mismatch (expected {}, got {}). \
+                         Review the skill and run `hrafn skills lock` to update.",
+                        skill_name,
+                        &expected[..12],
+                        &actual[..std::cmp::min(12, actual.len())],
+                    );
+                    continue;
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "skill '{}' integrity check failed: {err}",
+                        skill_name,
+                    );
+                    continue;
+                }
+            }
+        }
+
+        if is_toml {
+            if let Ok(skill) = load_skill_toml(&manifest_file) {
                 skills.push(skill);
             }
+        } else if let Ok(skill) = load_skill_md(&manifest_file, &path) {
+            skills.push(skill);
         }
     }
 
@@ -1459,6 +1512,30 @@ pub fn handle_command(command: crate::SkillCommands, config: &crate::config::Con
                 files_scanned
             );
 
+            // Auto-update the lockfile for the newly installed skill
+            let skill_name = installed_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown");
+            let manifest = installed_dir.join("SKILL.toml");
+            let manifest = if manifest.exists() {
+                manifest
+            } else {
+                installed_dir.join("SKILL.md")
+            };
+            if manifest.exists() {
+                let mut lockfile = integrity::read_lockfile(&skills_path).unwrap_or_default();
+                if let Err(err) =
+                    integrity::lock_skill(&mut lockfile, skill_name, &manifest, &skills_path)
+                {
+                    tracing::warn!("failed to update skills.lock for {skill_name}: {err}");
+                } else if let Err(err) = integrity::write_lockfile(&skills_path, &lockfile) {
+                    tracing::warn!("failed to write skills.lock: {err}");
+                } else {
+                    println!("  {} skills.lock updated.", console::style("✓").green().bold());
+                }
+            }
+
             println!("  Security audit completed successfully.");
             Ok(())
         }
@@ -1485,6 +1562,15 @@ pub fn handle_command(command: crate::SkillCommands, config: &crate::config::Con
             }
 
             std::fs::remove_dir_all(&skill_path)?;
+
+            // Remove entry from lockfile if present
+            let skills_path = skills_dir(workspace_dir);
+            if let Ok(mut lockfile) = integrity::read_lockfile(&skills_path) {
+                if lockfile.skills.remove(&name).is_some() {
+                    let _ = integrity::write_lockfile(&skills_path, &lockfile);
+                }
+            }
+
             println!(
                 "  {} Skill '{}' removed.",
                 console::style("✓").green().bold(),
@@ -1528,6 +1614,84 @@ pub fn handle_command(command: crate::SkillCommands, config: &crate::config::Con
             if any_failed {
                 anyhow::bail!("Some skill tests failed.");
             }
+            Ok(())
+        }
+        crate::SkillCommands::Lock => {
+            let skills_path = skills_dir(workspace_dir);
+            if !skills_path.exists() {
+                println!("No skills directory found.");
+                return Ok(());
+            }
+
+            let lockfile = integrity::lock_all_skills(&skills_path)?;
+            let count = lockfile.skills.len();
+            integrity::write_lockfile(&skills_path, &lockfile)?;
+
+            println!(
+                "  {} Locked {} skill{} in {}",
+                console::style("✓").green().bold(),
+                count,
+                if count == 1 { "" } else { "s" },
+                integrity::lockfile_path(&skills_path).display(),
+            );
+            for (name, entry) in &lockfile.skills {
+                println!("    {} {} ({})", console::style("·").dim(), name, &entry.sha256[..12]);
+            }
+            Ok(())
+        }
+        crate::SkillCommands::Verify => {
+            let skills_path = skills_dir(workspace_dir);
+            let lock_path = integrity::lockfile_path(&skills_path);
+            if !lock_path.exists() {
+                println!("No skills.lock found. Run `hrafn skills lock` to generate one.");
+                return Ok(());
+            }
+
+            let results = integrity::verify_all_skills(&skills_path)?;
+            if results.is_empty() {
+                println!("skills.lock is empty — nothing to verify.");
+                return Ok(());
+            }
+
+            let mut any_failed = false;
+            for (name, result) in &results {
+                match result {
+                    integrity::VerifyResult::Ok => {
+                        println!(
+                            "  {} {}",
+                            console::style("✓").green().bold(),
+                            name,
+                        );
+                    }
+                    integrity::VerifyResult::NotLocked => {
+                        println!(
+                            "  {} {} — not in lockfile",
+                            console::style("?").yellow().bold(),
+                            name,
+                        );
+                    }
+                    integrity::VerifyResult::Mismatch { expected, actual } => {
+                        any_failed = true;
+                        println!(
+                            "  {} {} — integrity mismatch (expected {}, got {})",
+                            console::style("✗").red().bold(),
+                            name,
+                            &expected[..12],
+                            &actual[..std::cmp::min(12, actual.len())],
+                        );
+                    }
+                }
+            }
+
+            if any_failed {
+                anyhow::bail!(
+                    "Skill integrity verification failed. Review the affected skills and run `hrafn skills lock` to update."
+                );
+            }
+            println!(
+                "\n  {} All skills verified.",
+                console::style("✓").green().bold(),
+            );
             Ok(())
         }
     }

@@ -278,6 +278,10 @@ pub enum SkillCommands {
         #[arg(long)]
         verbose: bool,
     },
+    /// Generate or update skills.lock from current skill file contents
+    Lock,
+    /// Verify all skills against skills.lock
+    Verify,
 }
 
 /// Migration subcommands
