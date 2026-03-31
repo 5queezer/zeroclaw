@@ -10,6 +10,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// Trust level assigned to a caller.
@@ -93,13 +94,31 @@ impl CallerRegistry {
     }
 
     /// Save registry to a JSON file, creating parent directories as needed.
+    ///
+    /// Uses atomic write (tmp + fsync + rename) so an interrupted write cannot
+    /// corrupt the registry file.
+    ///
+    /// **Concurrency note:** concurrent CLI invocations performing read-modify-write
+    /// can race. The atomic rename prevents corruption (last writer wins), but a
+    /// concurrent update may be silently lost. This is acceptable for interactive
+    /// CLI usage where concurrent identity commands are rare.
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create dir {}", parent.display()))?;
         }
         let json = serde_json::to_string_pretty(self).context("serialize caller registry")?;
-        std::fs::write(path, json).with_context(|| format!("write {}", path.display()))
+
+        // Atomic write: tmp → fsync → rename
+        let tmp = path.with_extension("tmp");
+        let mut f = std::fs::File::create(&tmp)
+            .with_context(|| format!("create temp file {}", tmp.display()))?;
+        f.write_all(json.as_bytes())
+            .with_context(|| format!("write temp file {}", tmp.display()))?;
+        f.sync_all()
+            .with_context(|| format!("fsync {}", tmp.display()))?;
+        std::fs::rename(&tmp, path)
+            .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))
     }
 
     /// Look up a caller. Returns `None` if not registered.

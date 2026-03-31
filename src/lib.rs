@@ -636,6 +636,7 @@ Examples:
 }
 
 /// Caller identity management subcommands
+#[cfg(feature = "desktop")]
 #[derive(Subcommand, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum IdentityCommands {
     /// List all registered callers
