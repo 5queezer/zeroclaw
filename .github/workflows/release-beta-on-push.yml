@@ -486,5 +486,22 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:beta-debian
           platforms: linux/amd64,linux/arm64
 
-  # ── Marketplace template sync removed — reusable workflow does not exist yet ──
-  # Re-add when .github/workflows/sync-marketplace-templates.yml is created.
+  # ── Post-publish: marketplace template sync ──────────────────────────
+  check-marketplace-secret:
+    name: Check Marketplace Token
+    needs: [publish]
+    runs-on: ubuntu-latest
+    outputs:
+      available: ${{ steps.check.outputs.available }}
+    steps:
+      - id: check
+        run: echo "available=${{ secrets.MARKETPLACE_PAT != '' }}" >> "$GITHUB_OUTPUT"
+
+  marketplace:
+    name: Sync Marketplace Templates
+    needs: [version, publish, check-marketplace-secret]
+    if: ${{ !cancelled() && needs.publish.result == 'success' && needs.check-marketplace-secret.outputs.available == 'true' }}
+    uses: ./.github/workflows/sync-marketplace-templates.yml
+    with:
+      release_tag: ${{ needs.version.outputs.tag }}
+    secrets: inherit
