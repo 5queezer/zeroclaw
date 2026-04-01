@@ -1007,6 +1007,10 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
             "/.well-known/agent-card.json",
             get(a2a::handle_agent_card),
         )
+        // v1.0 REST-style path bindings
+        .route("/message:send", post(a2a::handle_message_send_rest))
+        .route("/tasks/{id}", get(a2a::handle_tasks_get_rest))
+        // v0.3 backward-compatibility (unified JSON-RPC endpoint)
         .route("/a2a", post(a2a::handle_a2a_rpc));
 
     // ── WebAuthn hardware key authentication API (requires webauthn feature) ──

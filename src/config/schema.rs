@@ -3799,6 +3799,12 @@ pub struct A2aConfig {
     /// Protocol version advertised in the agent card (defaults to crate version).
     #[serde(default)]
     pub version: Option<String>,
+    /// A2A protocol version for `supported_interfaces` (defaults to "1.0").
+    #[serde(default)]
+    pub protocol_version: Option<String>,
+    /// Provider URL for the agent card (defaults to project repository URL).
+    #[serde(default)]
+    pub provider_url: Option<String>,
     /// Capability tags advertised in the agent card skills list.
     #[serde(default)]
     pub capabilities: Vec<String>,
@@ -3817,6 +3823,8 @@ impl std::fmt::Debug for A2aConfig {
             .field("public_url", &self.public_url)
             .field("bearer_token", &self.bearer_token.as_ref().map(|_| "***"))
             .field("version", &self.version)
+            .field("protocol_version", &self.protocol_version)
+            .field("provider_url", &self.provider_url)
             .field("capabilities", &self.capabilities)
             .field("notify_chat_id", &self.notify_chat_id)
             .finish()
@@ -10091,6 +10099,24 @@ impl Config {
         // Proxy (delegate to existing validation)
         self.proxy.validate()?;
         self.cloud_ops.validate()?;
+
+        // A2A
+        if let Some(ref pv) = self.a2a.protocol_version {
+            if pv.trim().is_empty() {
+                anyhow::bail!("a2a.protocol_version must not be empty when set");
+            }
+        }
+        if let Some(ref pu) = self.a2a.provider_url {
+            let trimmed = pu.trim();
+            if trimmed.is_empty() {
+                anyhow::bail!("a2a.provider_url must not be empty when set");
+            }
+            let parsed = reqwest::Url::parse(trimmed)
+                .map_err(|e| anyhow::anyhow!("a2a.provider_url is not a valid URL: {e}"))?;
+            if !matches!(parsed.scheme(), "http" | "https") {
+                anyhow::bail!("a2a.provider_url must use http or https scheme");
+            }
+        }
 
         // Notion
         if self.notion.enabled {

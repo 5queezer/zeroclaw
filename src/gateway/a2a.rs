@@ -51,17 +51,30 @@ impl TaskStore {
 #[derive(Debug, Clone, Serialize)]
 pub struct TaskState {
     pub id: String,
-    pub status: TaskStatus,
+    #[serde(rename = "state")]
+    pub status: A2aTaskState,
     pub artifacts: Vec<serde_json::Value>,
 }
 
+/// A2A v1.0 task state enum — SCREAMING_SNAKE_CASE with `TASK_STATE_` prefix.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum TaskStatus {
+pub enum A2aTaskState {
+    #[serde(rename = "TASK_STATE_SUBMITTED")]
     Submitted,
+    #[serde(rename = "TASK_STATE_WORKING")]
     Working,
+    #[serde(rename = "TASK_STATE_COMPLETED")]
     Completed,
+    #[serde(rename = "TASK_STATE_FAILED")]
     Failed,
+    #[serde(rename = "TASK_STATE_CANCELED")]
+    Canceled,
+    #[serde(rename = "TASK_STATE_INPUT_REQUIRED")]
+    InputRequired,
+    #[serde(rename = "TASK_STATE_REJECTED")]
+    Rejected,
+    #[serde(rename = "TASK_STATE_AUTH_REQUIRED")]
+    AuthRequired,
 }
 
 /// JSON-RPC 2.0 request envelope.
@@ -140,25 +153,58 @@ pub fn generate_agent_card(config: &crate::config::Config) -> serde_json::Value 
             .collect()
     };
 
-    json!({
+    let protocol_version = a2a
+        .protocol_version
+        .clone()
+        .unwrap_or_else(|| "1.0".to_string());
+
+    let provider_url = a2a
+        .provider_url
+        .clone()
+        .unwrap_or_else(|| "https://github.com/5queezer/hrafn".to_string());
+
+    // Only advertise security requirements when auth is actually configured
+    let requires_auth =
+        a2a.bearer_token.as_ref().is_some_and(|t| !t.is_empty()) || config.gateway.require_pairing;
+
+    let mut card = json!({
         "name": name,
         "description": description,
         "version": version,
-        "url": base_url,
+        "supported_interfaces": [{
+            "url": format!("{base_url}/"),
+            "protocol_binding": "JSONRPC",
+            "protocol_version": protocol_version
+        }],
         "capabilities": {
             "streaming": false,
             "pushNotifications": false
         },
-        "defaultInputModes": ["text"],
-        "defaultOutputModes": ["text"],
+        "defaultInputModes": ["text/plain"],
+        "defaultOutputModes": ["text/plain"],
         "skills": skills,
         "provider": {
-            "organization": "ZeroClaw"
-        },
-        "authentication": {
-            "schemes": ["bearer"]
+            "organization": "ZeroClaw",
+            "url": provider_url
         }
-    })
+    });
+
+    if requires_auth {
+        card["security_schemes"] = json!({
+            "bearer": {
+                "http_auth_security_scheme": {
+                    "scheme": "Bearer"
+                }
+            }
+        });
+        card["security_requirements"] = json!([{
+            "schemes": {
+                "bearer": { "list": [] }
+            }
+        }]);
+    }
+
+    card
 }
 
 // ── Handlers ─────────────────────────────────────────────────────
@@ -277,18 +323,24 @@ async fn handle_message_send(
     task_store: &Arc<TaskStore>,
     req: JsonRpcRequest,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    // Extract message text from params
+    // Extract message text from params.
+    // v1.0: detect part type by presence of `text` field (oneof).
+    // Backward-compat: also accept v0.3 `kind: "text"` discriminator.
     let message = req
         .params
         .pointer("/message/parts")
         .and_then(|parts| parts.as_array())
         .and_then(|parts| {
             parts.iter().find_map(|p| {
-                if p.get("kind").and_then(|t| t.as_str()) == Some("text") {
-                    p.get("text").and_then(|t| t.as_str()).map(String::from)
-                } else {
-                    None
+                // v1.0 oneof: part has a `text` field (no `kind` needed)
+                if let Some(text) = p.get("text").and_then(|t| t.as_str()) {
+                    return Some(text.to_string());
                 }
+                // v0.3 compat: `kind` discriminator
+                if p.get("kind").and_then(|t| t.as_str()) == Some("text") {
+                    return p.get("text").and_then(|t| t.as_str()).map(String::from);
+                }
+                None
             })
         })
         .or_else(|| {
@@ -329,7 +381,7 @@ async fn handle_message_send(
             task_id.clone(),
             TaskState {
                 id: task_id.clone(),
-                status: TaskStatus::Working,
+                status: A2aTaskState::Working,
                 artifacts: vec![],
             },
         );
@@ -366,11 +418,11 @@ async fn handle_message_send(
             let artifact = json!({
                 "artifactId": uuid::Uuid::new_v4().to_string(),
                 "name": "response",
-                "parts": [{ "kind": "text", "text": response }]
+                "parts": [{ "text": response }]
             });
             let mut tasks = task_store.tasks.write().await;
             if let Some(task) = tasks.get_mut(&task_id) {
-                task.status = TaskStatus::Completed;
+                task.status = A2aTaskState::Completed;
                 task.artifacts = vec![artifact.clone()];
             }
 
@@ -381,7 +433,7 @@ async fn handle_message_send(
                     "id": req.id,
                     "result": {
                         "id": task_id,
-                        "status": { "state": "completed" },
+                        "status": { "state": A2aTaskState::Completed },
                         "artifacts": [artifact]
                     }
                 })),
@@ -391,7 +443,7 @@ async fn handle_message_send(
             tracing::error!(task_id = %task_id, error = %e, "A2A task processing failed");
             let mut tasks = task_store.tasks.write().await;
             if let Some(task) = tasks.get_mut(&task_id) {
-                task.status = TaskStatus::Failed;
+                task.status = A2aTaskState::Failed;
             }
 
             (
@@ -401,7 +453,7 @@ async fn handle_message_send(
                     "id": req.id,
                     "result": {
                         "id": task_id,
-                        "status": { "state": "failed", "message": "Internal processing error" }
+                        "status": { "state": A2aTaskState::Failed, "message": "Internal processing error" }
                     }
                 })),
             )
@@ -441,6 +493,108 @@ async fn handle_tasks_get(
             Json(rpc_error(req.id, -32001, "Task not found")),
         ),
     }
+}
+
+// ── v1.0 REST-style endpoint handlers ───────────────────────
+
+/// Unwrap a JSON-RPC response into a REST response.
+/// Returns the `result` payload on success, or maps JSON-RPC error codes
+/// to appropriate HTTP status codes.
+fn unwrap_rpc_to_rest(
+    rpc_status: StatusCode,
+    rpc_body: serde_json::Value,
+) -> (StatusCode, Json<serde_json::Value>) {
+    // Propagate non-OK HTTP status directly (auth errors, 503, etc.)
+    if rpc_status != StatusCode::OK {
+        return (rpc_status, Json(rpc_body));
+    }
+
+    // If there's a result, return it directly
+    if let Some(result) = rpc_body.get("result").cloned() {
+        return (StatusCode::OK, Json(result));
+    }
+
+    // Translate JSON-RPC error codes to HTTP status codes
+    if let Some(error) = rpc_body.get("error") {
+        let code = error.get("code").and_then(|c| c.as_i64()).unwrap_or(-32000);
+        let http_status = match code {
+            -32600 => StatusCode::BAD_REQUEST,      // Invalid request
+            -32601 => StatusCode::NOT_FOUND,        // Method not found
+            -32602 => StatusCode::BAD_REQUEST,      // Invalid params
+            -32001 => StatusCode::NOT_FOUND,        // Task not found
+            _ => StatusCode::INTERNAL_SERVER_ERROR, // Server errors
+        };
+        return (
+            http_status,
+            Json(json!({
+                "error": {
+                    "code": code,
+                    "message": error.get("message").cloned().unwrap_or(json!("Unknown error"))
+                }
+            })),
+        );
+    }
+
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({"error": {"message": "Unexpected response format"}})),
+    )
+}
+
+/// `POST /message:send` — v1.0 REST binding for SendMessage.
+pub async fn handle_message_send_rest(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(params): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let (Some(_card), Some(task_store)) = (&state.a2a_agent_card, &state.a2a_task_store) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "A2A protocol not enabled"})),
+        )
+            .into_response();
+    };
+
+    if let Err(resp) = require_a2a_auth(&state, &headers) {
+        return resp.into_response();
+    }
+
+    let req = JsonRpcRequest {
+        jsonrpc: "2.0".into(),
+        id: json!(uuid::Uuid::new_v4().to_string()),
+        method: "message/send".into(),
+        params,
+    };
+    let (status, Json(body)) = Box::pin(handle_message_send(&state, task_store, req)).await;
+    unwrap_rpc_to_rest(status, body).into_response()
+}
+
+/// `GET /tasks/{id}` — v1.0 REST binding for GetTask.
+pub async fn handle_tasks_get_rest(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(task_id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let (Some(_card), Some(task_store)) = (&state.a2a_agent_card, &state.a2a_task_store) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "A2A protocol not enabled"})),
+        )
+            .into_response();
+    };
+
+    if let Err(resp) = require_a2a_auth(&state, &headers) {
+        return resp.into_response();
+    }
+
+    let req = JsonRpcRequest {
+        jsonrpc: "2.0".into(),
+        id: json!(uuid::Uuid::new_v4().to_string()),
+        method: "tasks/get".into(),
+        params: json!({"id": task_id}),
+    };
+    let (status, Json(body)) = handle_tasks_get(task_store, req).await;
+    unwrap_rpc_to_rest(status, body).into_response()
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -637,10 +791,22 @@ mod tests {
 
         let card = generate_agent_card(&config);
         assert_eq!(card["name"], "ZeroClaw Agent");
-        assert!(card["url"].as_str().unwrap().starts_with("http://"));
+        // v1.0: supported_interfaces replaces top-level url
+        let ifaces = card["supported_interfaces"].as_array().unwrap();
+        assert_eq!(ifaces.len(), 1);
+        assert!(ifaces[0]["url"].as_str().unwrap().starts_with("http://"));
+        assert_eq!(ifaces[0]["protocol_binding"], "JSONRPC");
+        assert_eq!(ifaces[0]["protocol_version"], "1.0");
         assert!(card["capabilities"].is_object());
         assert_eq!(card["capabilities"]["streaming"], false);
-        assert!(card["authentication"]["schemes"].is_array());
+        // v1.0: security_schemes replaces authentication
+        assert!(card["security_schemes"]["bearer"].is_object());
+        assert!(card["security_requirements"].is_array());
+        // v1.0: MIME types instead of bare "text"
+        assert_eq!(card["defaultInputModes"][0], "text/plain");
+        assert_eq!(card["defaultOutputModes"][0], "text/plain");
+        // Provider must include url
+        assert!(card["provider"]["url"].is_string());
         // Skills should have proper AgentSkill structure
         let skills = card["skills"].as_array().unwrap();
         assert!(!skills.is_empty());
@@ -666,7 +832,14 @@ mod tests {
         let card = generate_agent_card(&config);
         assert_eq!(card["name"], "my-agent");
         assert_eq!(card["description"], "My custom agent");
-        assert_eq!(card["url"], "https://agent.example.com");
+        // v1.0: URL is in supported_interfaces
+        let ifaces = card["supported_interfaces"].as_array().unwrap();
+        assert!(
+            ifaces[0]["url"]
+                .as_str()
+                .unwrap()
+                .starts_with("https://agent.example.com")
+        );
         assert_eq!(card["skills"].as_array().unwrap().len(), 2);
         assert_eq!(card["skills"][0]["id"], "search");
     }
@@ -692,7 +865,7 @@ mod tests {
                 task_id.clone(),
                 TaskState {
                     id: task_id.clone(),
-                    status: TaskStatus::Working,
+                    status: A2aTaskState::Working,
                     artifacts: vec![],
                 },
             );
@@ -702,14 +875,14 @@ mod tests {
         {
             let tasks = store.tasks.read().await;
             let task = tasks.get(&task_id).unwrap();
-            assert_eq!(task.status, TaskStatus::Working);
+            assert_eq!(task.status, A2aTaskState::Working);
         }
 
         // Update
         {
             let mut tasks = store.tasks.write().await;
             if let Some(task) = tasks.get_mut(&task_id) {
-                task.status = TaskStatus::Completed;
+                task.status = A2aTaskState::Completed;
                 task.artifacts = vec![json!({"text": "done"})];
             }
         }
@@ -718,7 +891,7 @@ mod tests {
         {
             let tasks = store.tasks.read().await;
             let task = tasks.get(&task_id).unwrap();
-            assert_eq!(task.status, TaskStatus::Completed);
+            assert_eq!(task.status, A2aTaskState::Completed);
             assert_eq!(task.artifacts.len(), 1);
         }
     }
@@ -893,7 +1066,7 @@ mod tests {
                 "task-abc".into(),
                 TaskState {
                     id: "task-abc".into(),
-                    status: TaskStatus::Completed,
+                    status: A2aTaskState::Completed,
                     artifacts: vec![json!({"text": "result"})],
                 },
             );
@@ -908,7 +1081,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert!(body["error"].is_null());
         assert_eq!(body["result"]["id"], "task-abc");
-        assert_eq!(body["result"]["status"]["state"], "completed");
+        assert_eq!(body["result"]["status"]["state"], "TASK_STATE_COMPLETED");
         assert_eq!(body["result"]["artifacts"].as_array().unwrap().len(), 1);
     }
 
@@ -936,7 +1109,7 @@ mod tests {
                     format!("task-{i}"),
                     TaskState {
                         id: format!("task-{i}"),
-                        status: TaskStatus::Completed,
+                        status: A2aTaskState::Completed,
                         artifacts: vec![],
                     },
                 );
@@ -960,7 +1133,7 @@ mod tests {
             jsonrpc: "2.0".into(),
             id: json!(1),
             method: "message/send".into(),
-            params: json!({"message": {"parts": [{"kind": "text", "text": "hello"}]}}),
+            params: json!({"message": {"parts": [{"text": "hello"}]}}),
         };
         let resp = handle_a2a_rpc(State(state), HeaderMap::new(), Json(req))
             .await
@@ -1013,18 +1186,18 @@ mod tests {
         // process_message fails in test (no provider) → task should be "failed"
         let result = &body["result"];
         assert!(result["id"].is_string());
-        assert_eq!(result["status"]["state"], "failed");
+        assert_eq!(result["status"]["state"], "TASK_STATE_FAILED");
 
         // Verify the task was stored with Failed status
         let task_id = result["id"].as_str().unwrap();
         let tasks = task_store.tasks.read().await;
         let task = tasks.get(task_id).unwrap();
-        assert_eq!(task.status, TaskStatus::Failed);
+        assert_eq!(task.status, A2aTaskState::Failed);
     }
 
     #[tokio::test]
-    async fn message_send_accepts_parts_format() {
-        // Tests the A2A-standard message/parts format.
+    async fn message_send_accepts_v1_parts_format() {
+        // Tests the v1.0 oneof message/parts format (no `kind` field).
         let state = a2a_test_state(None, false, &[]);
         let task_store = state.a2a_task_store.clone().unwrap();
         let req = JsonRpcRequest {
@@ -1033,8 +1206,8 @@ mod tests {
             method: "message/send".into(),
             params: json!({
                 "message": {
-                    "role": "user",
-                    "parts": [{"kind": "text", "text": "structured message"}],
+                    "role": "ROLE_USER",
+                    "parts": [{"text": "structured message"}],
                     "messageId": "msg-001"
                 }
             }),
@@ -1047,7 +1220,7 @@ mod tests {
         let result = &body["result"];
         assert!(result["id"].is_string());
         // Will fail due to no provider, but verifies the message was extracted
-        assert_eq!(result["status"]["state"], "failed");
+        assert_eq!(result["status"]["state"], "TASK_STATE_FAILED");
 
         // Task was created in the store
         let task_id = result["id"].as_str().unwrap();
@@ -1068,7 +1241,7 @@ mod tests {
                     format!("fill-{i}"),
                     TaskState {
                         id: format!("fill-{i}"),
-                        status: TaskStatus::Completed,
+                        status: A2aTaskState::Completed,
                         artifacts: vec![],
                     },
                 );
