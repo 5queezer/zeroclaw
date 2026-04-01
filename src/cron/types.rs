@@ -153,6 +153,15 @@ pub struct CronJob {
     /// How the job was created: `"imperative"` (CLI/API) or `"declarative"` (config).
     #[serde(default = "default_source")]
     pub source: String,
+    /// Identity of the caller that created this job (e.g. channel sender ID).
+    /// When `None`, the job was created by the owner or before ownership tracking
+    /// was introduced (backward compatible).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
+    /// When `true`, the job was registered by a non-owner caller and requires
+    /// explicit owner approval before it fires. Visible via `hrafn cron list --pending`.
+    #[serde(default)]
+    pub pending_approval: bool,
     pub created_at: DateTime<Utc>,
     pub next_run: DateTime<Utc>,
     pub last_run: Option<DateTime<Utc>>,

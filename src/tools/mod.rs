@@ -414,7 +414,8 @@ pub fn all_tools_with_runtime(
         Arc::new(RateLimitedTool::new(
             PathGuardedTool::new(
                 ShellTool::new_with_sandbox(security.clone(), runtime, sandbox)
-                    .with_timeout_secs(root_config.shell_tool.timeout_secs),
+                    .with_timeout_secs(root_config.shell_tool.timeout_secs)
+                    .with_process_limits(root_config.security.process_limits.clone()),
                 security.clone(),
             ),
             security.clone(),
@@ -951,7 +952,8 @@ pub fn all_tools_with_runtime(
         .with_multimodal_config(root_config.multimodal.clone())
         .with_delegate_config(root_config.delegate.clone())
         .with_workspace_dir(workspace_dir.to_path_buf())
-        .with_memory(memory.clone());
+        .with_memory(memory.clone())
+        .with_max_relay_depth(root_config.security.process_limits.max_relay_depth);
         tool_arcs.push(Arc::new(delegate_tool));
         Some(parent_tools)
     };

@@ -1,4 +1,5 @@
 use super::traits::{Tool, ToolResult};
+use crate::config::ProcessLimitsConfig;
 use crate::runtime::RuntimeAdapter;
 use crate::security::SecurityPolicy;
 use crate::security::traits::Sandbox;
@@ -41,12 +42,17 @@ const SAFE_ENV_VARS: &[&str] = &[
     "USERNAME",
 ];
 
+/// Shell persistence commands that create background-persistent processes.
+/// Blocked when `process_limits.max_respawns == 0`.
+const PERSISTENCE_COMMANDS: &[&str] = &["nohup", "setsid", "screen", "tmux", "disown"];
+
 /// Shell command execution tool with sandboxing
 pub struct ShellTool {
     security: Arc<SecurityPolicy>,
     runtime: Arc<dyn RuntimeAdapter>,
     sandbox: Arc<dyn Sandbox>,
     timeout_secs: u64,
+    process_limits: ProcessLimitsConfig,
 }
 
 impl ShellTool {
@@ -56,6 +62,7 @@ impl ShellTool {
             runtime,
             sandbox: Arc::new(crate::security::NoopSandbox),
             timeout_secs: DEFAULT_SHELL_TIMEOUT_SECS,
+            process_limits: ProcessLimitsConfig::default(),
         }
     }
 
@@ -69,6 +76,7 @@ impl ShellTool {
             runtime,
             sandbox,
             timeout_secs: DEFAULT_SHELL_TIMEOUT_SECS,
+            process_limits: ProcessLimitsConfig::default(),
         }
     }
 
@@ -76,6 +84,33 @@ impl ShellTool {
     pub fn with_timeout_secs(mut self, secs: u64) -> Self {
         self.timeout_secs = secs;
         self
+    }
+
+    /// Attach process limits for TTL clamping and persistence blocking.
+    pub fn with_process_limits(mut self, limits: ProcessLimitsConfig) -> Self {
+        self.process_limits = limits;
+        self
+    }
+
+    /// Check whether a command uses a persistence wrapper (nohup, setsid, etc.)
+    /// that would create a background-persistent process.
+    fn uses_persistence_command(command: &str) -> bool {
+        // Only check command positions: the first token and any token immediately
+        // after a shell operator (&&, ||, ;, |). This avoids false positives from
+        // persistence keywords appearing as arguments (e.g. `echo "connect to tmux"`)
+        // and catches bypass attempts via quoted wrappers (e.g. `"nohup" cmd`).
+        let mut check_next = true;
+        for word in command.split_whitespace() {
+            if check_next {
+                let clean = word.trim_matches(|c: char| c == '"' || c == '\'' || c == '\\');
+                let base = clean.rsplit('/').next().unwrap_or(clean);
+                if PERSISTENCE_COMMANDS.contains(&base) {
+                    return true;
+                }
+            }
+            check_next = matches!(word, "&&" | "||" | ";" | "|");
+        }
+        false
     }
 }
 
@@ -156,6 +191,21 @@ impl Tool for ShellTool {
             }
         }
 
+        // Block persistence commands when max_respawns == 0 (no background
+        // persistence without explicit opt-in).
+        if self.process_limits.max_respawns == 0 && Self::uses_persistence_command(command) {
+            return Ok(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some(
+                    "Command refused: persistence commands (nohup, setsid, screen, tmux, disown) \
+                     are blocked by process_limits.max_respawns=0. \
+                     Background-persistent processes require explicit owner opt-in."
+                        .to_string(),
+                ),
+            });
+        }
+
         // Execute with timeout to prevent hanging commands.
         // Clear the environment to prevent leaking API keys and other secrets
         // (CWE-200), then re-add only safe, functional variables.
@@ -188,7 +238,10 @@ impl Tool for ShellTool {
             }
         }
 
-        let timeout_secs = self.timeout_secs;
+        // Clamp timeout to the global TTL ceiling from process_limits.
+        let timeout_secs = self
+            .timeout_secs
+            .min(self.process_limits.max_shell_ttl_secs);
         let result = tokio::time::timeout(Duration::from_secs(timeout_secs), cmd.output()).await;
 
         match result {
@@ -802,5 +855,142 @@ mod tests {
             .expect("command with sandbox should succeed");
         assert!(result.success);
         assert!(result.output.contains("sandbox_test"));
+    }
+
+    // ── Process limits tests ────────────────────────────────
+
+    #[test]
+    fn uses_persistence_command_detects_nohup() {
+        assert!(ShellTool::uses_persistence_command("nohup ./server.sh"));
+        assert!(ShellTool::uses_persistence_command("/usr/bin/nohup ./run"));
+    }
+
+    #[test]
+    fn uses_persistence_command_detects_setsid() {
+        assert!(ShellTool::uses_persistence_command("setsid ./daemon"));
+    }
+
+    #[test]
+    fn uses_persistence_command_detects_screen_tmux() {
+        assert!(ShellTool::uses_persistence_command("screen -d -m ./run"));
+        assert!(ShellTool::uses_persistence_command("tmux new-session -d"));
+    }
+
+    #[test]
+    fn uses_persistence_command_detects_disown() {
+        assert!(ShellTool::uses_persistence_command("disown %1"));
+    }
+
+    #[test]
+    fn uses_persistence_command_detects_quoted_wrapper() {
+        assert!(ShellTool::uses_persistence_command("\"nohup\" ./server.sh"));
+        assert!(ShellTool::uses_persistence_command("'tmux' new-session -d"));
+    }
+
+    #[test]
+    fn uses_persistence_command_detects_after_operator() {
+        assert!(ShellTool::uses_persistence_command(
+            "echo hi && nohup ./server.sh"
+        ));
+        assert!(ShellTool::uses_persistence_command(
+            "echo hi || screen -d -m ./run"
+        ));
+        assert!(ShellTool::uses_persistence_command(
+            "echo hi ; tmux new-session -d"
+        ));
+        assert!(ShellTool::uses_persistence_command(
+            "cat file | nohup tee out"
+        ));
+    }
+
+    #[test]
+    fn uses_persistence_command_ignores_normal_commands() {
+        assert!(!ShellTool::uses_persistence_command("echo hello"));
+        assert!(!ShellTool::uses_persistence_command("ls -la"));
+        assert!(!ShellTool::uses_persistence_command("cargo build"));
+    }
+
+    #[test]
+    fn uses_persistence_command_ignores_arguments() {
+        assert!(!ShellTool::uses_persistence_command(
+            "echo \"connect to tmux\""
+        ));
+        assert!(!ShellTool::uses_persistence_command("echo screen"));
+        assert!(!ShellTool::uses_persistence_command(
+            "grep nohup logfile.txt"
+        ));
+        assert!(!ShellTool::uses_persistence_command(
+            "ls -la /usr/bin/nohup"
+        ));
+    }
+
+    #[tokio::test]
+    async fn shell_blocks_persistence_command_by_default() {
+        let security = Arc::new(SecurityPolicy {
+            autonomy: AutonomyLevel::Full,
+            allowed_commands: vec!["nohup".into(), "echo".into()],
+            workspace_dir: std::env::temp_dir(),
+            ..SecurityPolicy::default()
+        });
+        let tool = ShellTool::new(security, test_runtime());
+        // Default process_limits has max_respawns=0
+        let result = tool
+            .execute(json!({"command": "nohup echo test"}))
+            .await
+            .unwrap();
+        assert!(!result.success);
+        assert!(
+            result
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("persistence commands")
+        );
+    }
+
+    #[tokio::test]
+    async fn shell_allows_persistence_when_respawns_configured() {
+        let security = Arc::new(SecurityPolicy {
+            autonomy: AutonomyLevel::Full,
+            allowed_commands: vec!["nohup".into(), "echo".into()],
+            workspace_dir: std::env::temp_dir(),
+            ..SecurityPolicy::default()
+        });
+        let limits = ProcessLimitsConfig {
+            max_respawns: 1,
+            ..ProcessLimitsConfig::default()
+        };
+        let tool = ShellTool::new(security, test_runtime()).with_process_limits(limits);
+        let result = tool
+            .execute(json!({"command": "nohup echo test"}))
+            .await
+            .unwrap();
+        // Should not be blocked by persistence check (may still be blocked by
+        // other security policy, but the persistence gate should pass)
+        assert!(
+            result.success
+                || !result
+                    .error
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("persistence commands")
+        );
+    }
+
+    #[test]
+    fn shell_ttl_clamps_timeout() {
+        let limits = ProcessLimitsConfig {
+            max_shell_ttl_secs: 30,
+            ..ProcessLimitsConfig::default()
+        };
+        let tool = ShellTool::new(test_security(AutonomyLevel::Supervised), test_runtime())
+            .with_timeout_secs(120)
+            .with_process_limits(limits);
+        // The effective timeout should be min(120, 30) = 30
+        assert_eq!(
+            tool.timeout_secs
+                .min(tool.process_limits.max_shell_ttl_secs),
+            30
+        );
     }
 }

@@ -802,6 +802,8 @@ mod tests {
             delete_after_run: false,
             allowed_tools: None,
             source: "imperative".into(),
+            created_by: None,
+            pending_approval: false,
             created_at: Utc::now(),
             next_run: Utc::now(),
             last_run: None,
@@ -1124,6 +1126,7 @@ mod tests {
             None,
             true,
             None,
+            None,
         )
         .unwrap();
         let started = Utc::now();
@@ -1149,6 +1152,7 @@ mod tests {
             None,
             None,
             true,
+            None,
             None,
         )
         .unwrap();
@@ -1217,6 +1221,7 @@ mod tests {
             }),
             false,
             None,
+            None,
         )
         .unwrap();
         let started = Utc::now();
@@ -1256,6 +1261,7 @@ mod tests {
             }),
             false,
             None,
+            None,
         )
         .unwrap();
         let started = Utc::now();
@@ -1287,6 +1293,7 @@ mod tests {
             None,
             None,
             false,
+            None,
             None,
         )
         .unwrap();

@@ -307,7 +307,7 @@ impl ScheduleTool {
         // All job creation routes through validated cron helpers, which enforce
         // the full security policy (allowlist + risk gate) before persistence.
         if let Some(value) = expression {
-            let job = match cron::add_shell_job_with_approval(
+            let job = match cron::add_shell_job_with_approval_caller(
                 &self.config,
                 None,
                 cron::Schedule::Cron {
@@ -317,6 +317,7 @@ impl ScheduleTool {
                 command,
                 None,
                 approved,
+                Some("agent"),
             ) {
                 Ok(job) => job,
                 Err(error) => {

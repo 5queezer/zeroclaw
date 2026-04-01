@@ -7322,6 +7322,10 @@ pub struct SecurityConfig {
     #[serde(default)]
     pub resources: ResourceLimitsConfig,
 
+    /// Process termination and inter-agent relay limits.
+    #[serde(default)]
+    pub process_limits: ProcessLimitsConfig,
+
     /// Audit logging configuration
     #[serde(default)]
     pub audit: AuditConfig,
@@ -7752,6 +7756,49 @@ impl Default for ResourceLimitsConfig {
             max_cpu_time_seconds: default_max_cpu_time_seconds(),
             max_subprocesses: default_max_subprocesses(),
             memory_monitoring: default_memory_monitoring_enabled(),
+        }
+    }
+}
+
+/// Process termination and inter-agent relay limits (`[security.process_limits]`).
+///
+/// Prevents unbounded resource consumption from runaway shell processes and
+/// inter-agent relay loops (ref: arXiv:2602.20021, Case Study #4).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ProcessLimitsConfig {
+    /// Maximum wall-clock time (seconds) a shell process may run before being
+    /// killed. Caps the per-command timeout regardless of `shell_tool.timeout_secs`.
+    /// Default: `3600` (1 hour).
+    #[serde(default = "default_max_shell_ttl_secs")]
+    pub max_shell_ttl_secs: u64,
+
+    /// Maximum respawn count for background-persistent shell commands.
+    /// When `0` (default), persistence commands (`nohup`, `setsid`, `screen`,
+    /// `tmux`, `disown`) are refused at spawn time.
+    #[serde(default)]
+    pub max_respawns: u32,
+
+    /// Maximum depth for inter-agent relay chains (agent-to-agent delegation).
+    /// When a relay chain exceeds this depth, forwarding is halted and the
+    /// owner is notified. Default: `10`.
+    #[serde(default = "default_max_relay_depth")]
+    pub max_relay_depth: u32,
+}
+
+fn default_max_shell_ttl_secs() -> u64 {
+    3600
+}
+
+fn default_max_relay_depth() -> u32 {
+    10
+}
+
+impl Default for ProcessLimitsConfig {
+    fn default() -> Self {
+        Self {
+            max_shell_ttl_secs: default_max_shell_ttl_secs(),
+            max_respawns: 0,
+            max_relay_depth: default_max_relay_depth(),
         }
     }
 }

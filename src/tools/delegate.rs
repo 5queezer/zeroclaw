@@ -61,6 +61,10 @@ pub struct DelegateTool {
     provider_runtime_options: providers::ProviderRuntimeOptions,
     /// Depth at which this tool instance lives in the delegation chain.
     depth: u32,
+    /// Global relay depth ceiling from `security.process_limits.max_relay_depth`.
+    /// Independent of per-agent `max_depth` — acts as a circuit breaker for
+    /// inter-agent relay chains.
+    max_relay_depth: u32,
     /// Parent tool registry for agentic sub-agents.
     parent_tools: Arc<RwLock<Vec<Arc<dyn Tool>>>>,
     /// Inherited multimodal handling config for sub-agent loops.
@@ -101,6 +105,7 @@ impl DelegateTool {
             fallback_credential,
             provider_runtime_options,
             depth: 0,
+            max_relay_depth: crate::config::ProcessLimitsConfig::default().max_relay_depth,
             parent_tools: Arc::new(RwLock::new(Vec::new())),
             multimodal_config: crate::config::MultimodalConfig::default(),
             delegate_config: DelegateToolConfig::default(),
@@ -141,6 +146,7 @@ impl DelegateTool {
             fallback_credential,
             provider_runtime_options,
             depth,
+            max_relay_depth: crate::config::ProcessLimitsConfig::default().max_relay_depth,
             parent_tools: Arc::new(RwLock::new(Vec::new())),
             multimodal_config: crate::config::MultimodalConfig::default(),
             delegate_config: DelegateToolConfig::default(),
@@ -148,6 +154,12 @@ impl DelegateTool {
             cancellation_token: CancellationToken::new(),
             memory: None,
         }
+    }
+
+    /// Attach the global relay depth ceiling from process_limits config.
+    pub fn with_max_relay_depth(mut self, max_relay_depth: u32) -> Self {
+        self.max_relay_depth = max_relay_depth;
+        self
     }
 
     /// Attach parent tools used to build sub-agent allowlist registries.
@@ -405,6 +417,28 @@ impl DelegateTool {
             }
         };
 
+        // Global relay depth circuit breaker (security.process_limits.max_relay_depth).
+        // Independent of per-agent max_depth — prevents unbounded inter-agent relay chains.
+        if self.depth >= self.max_relay_depth {
+            tracing::warn!(
+                depth = self.depth,
+                max_relay_depth = self.max_relay_depth,
+                agent = agent_name,
+                "Inter-agent relay depth limit exceeded — halting delegation chain"
+            );
+            return Ok(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some(format!(
+                    "Inter-agent relay circuit breaker triggered ({depth}/{max}). \
+                     Delegation chain halted to prevent unbounded relay loops. \
+                     Adjust security.process_limits.max_relay_depth to increase the limit.",
+                    depth = self.depth,
+                    max = self.max_relay_depth
+                )),
+            });
+        }
+
         // Check recursion depth (immutable — set at construction, incremented for sub-agents)
         if self.depth >= agent_config.max_depth {
             return Ok(ToolResult {
@@ -569,6 +603,26 @@ impl DelegateTool {
             }
         };
 
+        // Global relay depth circuit breaker (background path).
+        if self.depth >= self.max_relay_depth {
+            tracing::warn!(
+                depth = self.depth,
+                max_relay_depth = self.max_relay_depth,
+                agent = agent_name,
+                "Inter-agent relay depth limit exceeded — halting background delegation"
+            );
+            return Ok(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some(format!(
+                    "Inter-agent relay circuit breaker triggered ({depth}/{max}). \
+                     Background delegation halted.",
+                    depth = self.depth,
+                    max = self.max_relay_depth
+                )),
+            });
+        }
+
         if self.depth >= agent_config.max_depth {
             return Ok(ToolResult {
                 success: false,
@@ -630,6 +684,7 @@ impl DelegateTool {
         let fallback_credential = self.fallback_credential.clone();
         let provider_runtime_options = self.provider_runtime_options.clone();
         let depth = self.depth;
+        let max_relay_depth = self.max_relay_depth;
         let parent_tools = Arc::clone(&self.parent_tools);
         let multimodal_config = self.multimodal_config.clone();
         let delegate_config = self.delegate_config.clone();
@@ -645,6 +700,7 @@ impl DelegateTool {
                 fallback_credential,
                 provider_runtime_options,
                 depth,
+                max_relay_depth,
                 parent_tools,
                 multimodal_config,
                 delegate_config,
@@ -787,6 +843,7 @@ impl DelegateTool {
             let fallback_credential = self.fallback_credential.clone();
             let provider_runtime_options = self.provider_runtime_options.clone();
             let depth = self.depth;
+            let max_relay_depth = self.max_relay_depth;
             let parent_tools = Arc::clone(&self.parent_tools);
             let multimodal_config = self.multimodal_config.clone();
             let delegate_config = self.delegate_config.clone();
@@ -803,6 +860,7 @@ impl DelegateTool {
                     fallback_credential,
                     provider_runtime_options,
                     depth,
+                    max_relay_depth,
                     parent_tools,
                     multimodal_config,
                     delegate_config,
@@ -1547,6 +1605,42 @@ mod tests {
             .unwrap();
         assert!(!result.success);
         assert!(result.error.unwrap().contains("depth limit"));
+    }
+
+    #[tokio::test]
+    async fn relay_depth_circuit_breaker() {
+        // Set max_relay_depth=2, depth=2 => should trigger circuit breaker
+        let tool = DelegateTool::with_depth(sample_agents(), None, test_security(), 2)
+            .with_max_relay_depth(2);
+        let result = tool
+            .execute(json!({"agent": "researcher", "prompt": "test"}))
+            .await
+            .unwrap();
+        assert!(!result.success);
+        let err = result.error.unwrap();
+        assert!(
+            err.contains("circuit breaker"),
+            "Expected circuit breaker error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_depth_allows_within_limit() {
+        // depth=0, max_relay_depth=10 => should not trigger circuit breaker
+        // (will still fail for other reasons since no provider is configured)
+        let tool =
+            DelegateTool::new(sample_agents(), None, test_security()).with_max_relay_depth(10);
+        let result = tool
+            .execute(json!({"agent": "researcher", "prompt": "test"}))
+            .await
+            .unwrap();
+        // Should NOT contain circuit breaker error
+        if let Some(err) = &result.error {
+            assert!(
+                !err.contains("circuit breaker"),
+                "Circuit breaker should not trigger at depth 0"
+            );
+        }
     }
 
     #[test]

@@ -529,6 +529,7 @@ mod tests {
             None,
             false,
             Some(vec!["file_read".into()]),
+            None,
         )
         .unwrap();
         let tool = CronUpdateTool::new(cfg.clone(), test_security(&cfg));
@@ -565,6 +566,7 @@ mod tests {
             None,
             None,
             false,
+            None,
             None,
         )
         .unwrap();

@@ -324,6 +324,7 @@ pub async fn handle_api_cron_add(
             delivery,
             delete_after_run,
             allowed_tools,
+            Some("api"),
         )
     } else {
         let command = match command.as_deref() {
@@ -337,7 +338,15 @@ pub async fn handle_api_cron_add(
             }
         };
 
-        crate::cron::add_shell_job_with_approval(&config, name, schedule, command, delivery, false)
+        crate::cron::add_shell_job_with_approval_caller(
+            &config,
+            name,
+            schedule,
+            command,
+            delivery,
+            false,
+            Some("api"),
+        )
     };
 
     match result {

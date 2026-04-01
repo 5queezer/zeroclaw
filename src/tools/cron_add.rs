@@ -274,13 +274,14 @@ impl Tool for CronAddTool {
                     return Ok(blocked);
                 }
 
-                cron::add_shell_job_with_approval(
+                cron::add_shell_job_with_approval_caller(
                     &self.config,
                     name,
                     schedule,
                     command,
                     delivery,
                     approved,
+                    Some("agent"),
                 )
             }
             JobType::Agent => {
@@ -347,6 +348,7 @@ impl Tool for CronAddTool {
                     delivery,
                     delete_after_run,
                     allowed_tools,
+                    Some("agent"),
                 )
             }
         };
