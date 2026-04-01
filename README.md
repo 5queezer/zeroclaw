@@ -201,3 +201,5 @@ Hrafn originated as a fork of [ZeroClaw](https://github.com/zeroclaw-labs/zerocl
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE). You retain copyright of your contributions.
+
+**`memory-muninndb` feature gate:** Enabling this feature pulls in [MuninnDB](https://github.com/5queezer/muninndb), which is licensed under BSL 1.1 (not open source) and patent pending (U.S. Provisional Application No. 63/991,402). Commercial use of MuninnDB requires a separate license. See [muninndb.com](https://muninndb.com) for details.
