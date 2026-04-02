@@ -165,6 +165,19 @@ pub enum A2aTaskState {
     AuthRequired,
 }
 
+impl A2aTaskState {
+    /// Whether this state is terminal (task will not transition further).
+    fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            A2aTaskState::Completed
+                | A2aTaskState::Failed
+                | A2aTaskState::Canceled
+                | A2aTaskState::Rejected
+        )
+    }
+}
+
 /// JSON-RPC 2.0 request envelope.
 #[derive(Debug, Deserialize)]
 pub struct JsonRpcRequest {
@@ -411,47 +424,103 @@ async fn handle_message_send(
     task_store: &Arc<TaskStore>,
     req: JsonRpcRequest,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    // Extract inbound message_id and context_id for propagation.
-    let inbound_message_id = req
+    // Parse the inbound message: preserve the original v1 Message when present,
+    // only synthesize for the legacy simple-string fallback.
+    let (message_text, inbound_msg, context_id) = if let Some(msg_obj) = req
         .params
-        .pointer("/message/messageId")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-    let inbound_context_id = req
-        .params
-        .pointer("/message/contextId")
-        .and_then(|v| v.as_str())
-        .map(String::from);
+        .get("message")
+        .filter(|m| m.get("parts").and_then(|p| p.as_array()).is_some())
+    {
+        // v1.0 structured message — preserve original parts/metadata.
+        // Extract text for the agent pipeline (first text part).
+        let text = msg_obj
+            .pointer("/parts")
+            .and_then(|parts| parts.as_array())
+            .and_then(|parts| {
+                parts.iter().find_map(|p| {
+                    p.get("text")
+                        .and_then(|t| t.as_str())
+                        .map(String::from)
+                        .or_else(|| {
+                            // v0.3 compat: `kind` discriminator
+                            if p.get("kind").and_then(|t| t.as_str()) == Some("text") {
+                                p.get("text").and_then(|t| t.as_str()).map(String::from)
+                            } else {
+                                None
+                            }
+                        })
+                })
+            });
+        let Some(text) = text else {
+            return (
+                StatusCode::OK,
+                Json(rpc_error(
+                    req.id,
+                    -32602,
+                    "Invalid params: missing message text",
+                )),
+            );
+        };
 
-    // Extract message text from params.
-    // v1.0: detect part type by presence of `text` field (oneof).
-    // Backward-compat: also accept v0.3 `kind: "text"` discriminator.
-    let message_text = req
-        .params
-        .pointer("/message/parts")
-        .and_then(|parts| parts.as_array())
-        .and_then(|parts| {
-            parts.iter().find_map(|p| {
-                // v1.0 oneof: part has a `text` field (no `kind` needed)
-                if let Some(text) = p.get("text").and_then(|t| t.as_str()) {
-                    return Some(text.to_string());
-                }
-                // v0.3 compat: `kind` discriminator
-                if p.get("kind").and_then(|t| t.as_str()) == Some("text") {
-                    return p.get("text").and_then(|t| t.as_str()).map(String::from);
-                }
-                None
-            })
-        })
-        .or_else(|| {
-            // Simple text fallback
-            req.params
-                .get("message")
-                .and_then(|m| m.as_str())
-                .map(String::from)
-        });
+        let ctx_id = msg_obj
+            .get("contextId")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-    let Some(message_text) = message_text else {
+        // Deserialize the full original Message, preserving all parts/metadata.
+        let inbound: Message = match serde_json::from_value::<Message>(msg_obj.clone()) {
+            Ok(mut msg) => {
+                // Ensure context_id is set
+                if msg.context_id.is_none() {
+                    msg.context_id = Some(ctx_id.clone());
+                }
+                msg
+            }
+            Err(_) => {
+                // Fallback: build from extracted fields if deserialization fails
+                Message {
+                    role: msg_obj
+                        .get("role")
+                        .and_then(|r| r.as_str())
+                        .unwrap_or("ROLE_USER")
+                        .to_string(),
+                    parts: vec![Part::Text {
+                        text: text.clone(),
+                        metadata: None,
+                    }],
+                    message_id: msg_obj
+                        .get("messageId")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    context_id: Some(ctx_id.clone()),
+                    metadata: msg_obj.get("metadata").cloned(),
+                }
+            }
+        };
+
+        (text, inbound, ctx_id)
+    } else if let Some(text) = req
+        .params
+        .get("message")
+        .and_then(|m| m.as_str())
+        .map(String::from)
+    {
+        // Legacy simple-string fallback — synthesize a Message.
+        let ctx_id = uuid::Uuid::new_v4().to_string();
+        let inbound = Message {
+            role: "ROLE_USER".to_string(),
+            parts: vec![Part::Text {
+                text: text.clone(),
+                metadata: None,
+            }],
+            message_id: uuid::Uuid::new_v4().to_string(),
+            context_id: Some(ctx_id.clone()),
+            metadata: None,
+        };
+        (text, inbound, ctx_id)
+    } else {
         return (
             StatusCode::OK,
             Json(rpc_error(
@@ -463,20 +532,23 @@ async fn handle_message_send(
     };
 
     let task_id = uuid::Uuid::new_v4().to_string();
-    let context_id = inbound_context_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     // Store task as working (enforce capacity limit to prevent memory exhaustion)
     {
         let mut tasks = task_store.tasks.write().await;
         if tasks.len() >= MAX_TASKS {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(rpc_error(
-                    req.id,
-                    -32000,
-                    "Task store full — too many in-flight tasks",
-                )),
-            );
+            // Evict terminal tasks before rejecting
+            tasks.retain(|_, t| !t.status.state.is_terminal());
+            if tasks.len() >= MAX_TASKS {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(rpc_error(
+                        req.id,
+                        -32000,
+                        "Task store full — too many in-flight tasks",
+                    )),
+                );
+            }
         }
         tasks.insert(
             task_id.clone(),
@@ -494,18 +566,6 @@ async fn handle_message_send(
             },
         );
     }
-
-    // Build history entry from the inbound message
-    let inbound_msg = Message {
-        role: "ROLE_USER".to_string(),
-        parts: vec![Part::Text {
-            text: message_text.clone(),
-            metadata: None,
-        }],
-        message_id: inbound_message_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
-        context_id: Some(context_id.clone()),
-        metadata: None,
-    };
 
     // Process via agent pipeline
     let config = state.config.lock().clone();
@@ -1461,7 +1521,8 @@ mod tests {
         let state = a2a_test_state(None, false, &[]);
         let task_store = state.a2a_task_store.clone().unwrap();
 
-        // Fill the store to capacity
+        // Fill the store to capacity with non-terminal (Working) tasks
+        // so they won't be evicted by the terminal-task eviction logic.
         {
             let mut tasks = task_store.tasks.write().await;
             for i in 0..MAX_TASKS {
@@ -1470,7 +1531,7 @@ mod tests {
                     Task {
                         id: format!("fill-{i}"),
                         status: TaskStatus {
-                            state: A2aTaskState::Completed,
+                            state: A2aTaskState::Working,
                             message: None,
                             timestamp: None,
                         },
@@ -1496,5 +1557,48 @@ mod tests {
         let body = response_json(resp).await;
         assert_eq!(body["error"]["code"], -32000);
         assert!(body["error"]["message"].as_str().unwrap().contains("full"));
+    }
+
+    #[tokio::test]
+    async fn message_send_evicts_terminal_tasks_when_at_capacity() {
+        let state = a2a_test_state(None, false, &[]);
+        let task_store = state.a2a_task_store.clone().unwrap();
+
+        // Fill the store with terminal (Completed) tasks
+        {
+            let mut tasks = task_store.tasks.write().await;
+            for i in 0..MAX_TASKS {
+                tasks.insert(
+                    format!("done-{i}"),
+                    Task {
+                        id: format!("done-{i}"),
+                        status: TaskStatus {
+                            state: A2aTaskState::Completed,
+                            message: None,
+                            timestamp: None,
+                        },
+                        context_id: None,
+                        artifacts: None,
+                        history: None,
+                        metadata: None,
+                    },
+                );
+            }
+        }
+
+        // Should succeed because terminal tasks get evicted
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: json!(1),
+            method: "message/send".into(),
+            params: json!({"message": "should succeed after eviction"}),
+        };
+        let resp = handle_a2a_rpc(State(state), HeaderMap::new(), Json(req))
+            .await
+            .into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = response_json(resp).await;
+        // Should get a result (not an error), proving eviction worked
+        assert!(body["result"]["id"].is_string());
     }
 }
