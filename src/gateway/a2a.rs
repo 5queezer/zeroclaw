@@ -8,7 +8,6 @@
 //!
 //! **Not yet implemented (see issue #3566):**
 //! - `message/stream` (SSE)
-//! - `tasks/cancel`
 //! - `input-required` state / multi-turn conversations (`contextId`)
 //! - Push notifications
 //! - Structured/binary message parts (`data`, `raw`)
@@ -356,6 +355,7 @@ pub async fn handle_a2a_rpc(
             .await
             .into_response(),
         "tasks/get" => handle_tasks_get(task_store, body).await.into_response(),
+        "tasks/cancel" => handle_tasks_cancel(task_store, body).await.into_response(),
         _ => (
             StatusCode::OK,
             Json(rpc_error(
@@ -631,10 +631,21 @@ async fn handle_message_send(
                 metadata: None,
             };
 
-            {
+            // Only write the result if the task hasn't been canceled in the
+            // meantime. This prevents a cancel→completed race where the
+            // synchronous agent pipeline overwrites a Canceled state.
+            let task = {
                 let mut tasks = task_store.tasks.write().await;
-                tasks.insert(task_id.clone(), task.clone());
-            }
+                if tasks
+                    .get(&task_id)
+                    .is_some_and(|t| t.status.state == A2aTaskState::Canceled)
+                {
+                    tasks.get(&task_id).cloned().unwrap()
+                } else {
+                    tasks.insert(task_id.clone(), task.clone());
+                    task
+                }
+            };
 
             (
                 StatusCode::OK,
@@ -672,10 +683,19 @@ async fn handle_message_send(
                 metadata: None,
             };
 
-            {
+            // Preserve Canceled state — don't overwrite with Failed.
+            let task = {
                 let mut tasks = task_store.tasks.write().await;
-                tasks.insert(task_id.clone(), task.clone());
-            }
+                if tasks
+                    .get(&task_id)
+                    .is_some_and(|t| t.status.state == A2aTaskState::Canceled)
+                {
+                    tasks.get(&task_id).cloned().unwrap()
+                } else {
+                    tasks.insert(task_id.clone(), task.clone());
+                    task
+                }
+            };
 
             (
                 StatusCode::OK,
@@ -719,6 +739,51 @@ async fn handle_tasks_get(
     }
 }
 
+async fn handle_tasks_cancel(
+    task_store: &Arc<TaskStore>,
+    req: JsonRpcRequest,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let task_id = req.params.get("id").and_then(|v| v.as_str()).unwrap_or("");
+
+    if task_id.is_empty() {
+        return (
+            StatusCode::OK,
+            Json(rpc_error(req.id, -32602, "Invalid params: missing task id")),
+        );
+    }
+
+    let mut tasks = task_store.tasks.write().await;
+    match tasks.get_mut(task_id) {
+        Some(task) => {
+            if task.status.state.is_terminal() {
+                return (
+                    StatusCode::OK,
+                    Json(rpc_error(
+                        req.id,
+                        -32002,
+                        "Task is already in a terminal state",
+                    )),
+                );
+            }
+            task.status.state = A2aTaskState::Canceled;
+            task.status.timestamp = Some(chrono::Utc::now().to_rfc3339());
+            let task = task.clone();
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "jsonrpc": "2.0",
+                    "id": req.id,
+                    "result": task
+                })),
+            )
+        }
+        None => (
+            StatusCode::OK,
+            Json(rpc_error(req.id, -32001, "Task not found")),
+        ),
+    }
+}
+
 // ── v1.0 REST-style endpoint handlers ───────────────────────
 
 /// Unwrap a JSON-RPC response into a REST response.
@@ -746,6 +811,7 @@ fn unwrap_rpc_to_rest(
             -32601 => StatusCode::NOT_FOUND,        // Method not found
             -32602 => StatusCode::BAD_REQUEST,      // Invalid params
             -32001 => StatusCode::NOT_FOUND,        // Task not found
+            -32002 => StatusCode::CONFLICT,         // Task already terminal
             _ => StatusCode::INTERNAL_SERVER_ERROR, // Server errors
         };
         return (
@@ -818,6 +884,34 @@ pub async fn handle_tasks_get_rest(
         params: json!({"id": task_id}),
     };
     let (status, Json(body)) = handle_tasks_get(task_store, req).await;
+    unwrap_rpc_to_rest(status, body).into_response()
+}
+
+/// `POST /tasks/{id}:cancel` — v1.0 REST binding for CancelTask.
+pub async fn handle_tasks_cancel_rest(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(task_id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let (Some(_card), Some(task_store)) = (&state.a2a_agent_card, &state.a2a_task_store) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "A2A protocol not enabled"})),
+        )
+            .into_response();
+    };
+
+    if let Err(resp) = require_a2a_auth(&state, &headers) {
+        return resp.into_response();
+    }
+
+    let req = JsonRpcRequest {
+        jsonrpc: "2.0".into(),
+        id: json!(uuid::Uuid::new_v4().to_string()),
+        method: "tasks/cancel".into(),
+        params: json!({"id": task_id}),
+    };
+    let (status, Json(body)) = handle_tasks_cancel(task_store, req).await;
     unwrap_rpc_to_rest(status, body).into_response()
 }
 
@@ -1268,7 +1362,7 @@ mod tests {
         let req = JsonRpcRequest {
             jsonrpc: "2.0".into(),
             id: json!(42),
-            method: "tasks/cancel".into(),
+            method: "tasks/unknown".into(),
             params: json!({}),
         };
         let resp = handle_a2a_rpc(State(state), HeaderMap::new(), Json(req))
@@ -1358,6 +1452,173 @@ mod tests {
         let (status, Json(body)) = handle_tasks_get(&store, req).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["error"]["code"], -32602);
+    }
+
+    // ── CancelTask tests ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn tasks_cancel_cancels_working_task() {
+        let store = Arc::new(TaskStore::new());
+        {
+            let mut tasks = store.tasks.write().await;
+            tasks.insert(
+                "task-work".into(),
+                Task {
+                    id: "task-work".into(),
+                    status: TaskStatus {
+                        state: A2aTaskState::Working,
+                        message: None,
+                        timestamp: None,
+                    },
+                    context_id: None,
+                    artifacts: None,
+                    history: None,
+                    metadata: None,
+                },
+            );
+        }
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: json!(1),
+            method: "tasks/cancel".into(),
+            params: json!({"id": "task-work"}),
+        };
+        let (status, Json(body)) = handle_tasks_cancel(&store, req).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body["error"].is_null());
+        assert_eq!(body["result"]["id"], "task-work");
+        assert_eq!(body["result"]["status"]["state"], "TASK_STATE_CANCELED");
+        assert!(body["result"]["status"]["timestamp"].is_string());
+    }
+
+    #[tokio::test]
+    async fn tasks_cancel_returns_not_found_for_missing_task() {
+        let store = Arc::new(TaskStore::new());
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: json!(1),
+            method: "tasks/cancel".into(),
+            params: json!({"id": "no-such-task"}),
+        };
+        let (status, Json(body)) = handle_tasks_cancel(&store, req).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["error"]["code"], -32001);
+    }
+
+    #[tokio::test]
+    async fn tasks_cancel_rejects_terminal_task() {
+        let store = Arc::new(TaskStore::new());
+        {
+            let mut tasks = store.tasks.write().await;
+            tasks.insert(
+                "task-done".into(),
+                Task {
+                    id: "task-done".into(),
+                    status: TaskStatus {
+                        state: A2aTaskState::Completed,
+                        message: None,
+                        timestamp: None,
+                    },
+                    context_id: None,
+                    artifacts: None,
+                    history: None,
+                    metadata: None,
+                },
+            );
+        }
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: json!(1),
+            method: "tasks/cancel".into(),
+            params: json!({"id": "task-done"}),
+        };
+        let (status, Json(body)) = handle_tasks_cancel(&store, req).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["error"]["code"], -32002);
+    }
+
+    #[tokio::test]
+    async fn tasks_cancel_rejects_empty_task_id() {
+        let store = Arc::new(TaskStore::new());
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: json!(1),
+            method: "tasks/cancel".into(),
+            params: json!({}),
+        };
+        let (status, Json(body)) = handle_tasks_cancel(&store, req).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["error"]["code"], -32602);
+    }
+
+    #[tokio::test]
+    async fn tasks_cancel_rejects_already_canceled_task() {
+        let store = Arc::new(TaskStore::new());
+        {
+            let mut tasks = store.tasks.write().await;
+            tasks.insert(
+                "task-cx".into(),
+                Task {
+                    id: "task-cx".into(),
+                    status: TaskStatus {
+                        state: A2aTaskState::Canceled,
+                        message: None,
+                        timestamp: None,
+                    },
+                    context_id: None,
+                    artifacts: None,
+                    history: None,
+                    metadata: None,
+                },
+            );
+        }
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: json!(1),
+            method: "tasks/cancel".into(),
+            params: json!({"id": "task-cx"}),
+        };
+        let (status, Json(body)) = handle_tasks_cancel(&store, req).await;
+        assert_eq!(status, StatusCode::OK);
+        // Canceled is terminal, so this should be rejected
+        assert_eq!(body["error"]["code"], -32002);
+    }
+
+    #[tokio::test]
+    async fn tasks_cancel_via_rpc_dispatch() {
+        let state = a2a_test_state(None, false, &[]);
+        let task_store = state.a2a_task_store.as_ref().unwrap();
+        {
+            let mut tasks = task_store.tasks.write().await;
+            tasks.insert(
+                "task-rpc".into(),
+                Task {
+                    id: "task-rpc".into(),
+                    status: TaskStatus {
+                        state: A2aTaskState::Working,
+                        message: None,
+                        timestamp: None,
+                    },
+                    context_id: None,
+                    artifacts: None,
+                    history: None,
+                    metadata: None,
+                },
+            );
+        }
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: json!(1),
+            method: "tasks/cancel".into(),
+            params: json!({"id": "task-rpc"}),
+        };
+        let resp = handle_a2a_rpc(State(state), HeaderMap::new(), Json(req))
+            .await
+            .into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(body["result"]["status"]["state"], "TASK_STATE_CANCELED");
     }
 
     #[tokio::test]
