@@ -858,7 +858,16 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
 
         let card = a2a::generate_agent_card(&config);
         tracing::info!("A2A protocol enabled — agent card generated");
-        (Some(Arc::new(card)), Some(Arc::new(a2a::TaskStore::new())))
+        let task_store = Arc::new(a2a::TaskStore::new());
+
+        // Start background eviction for terminal tasks
+        a2a::spawn_eviction_task(
+            Arc::clone(&task_store),
+            config.a2a.task_ttl_secs,
+            config.a2a.eviction_interval_secs,
+        );
+
+        (Some(Arc::new(card)), Some(task_store))
     } else {
         (None, None)
     };
@@ -928,6 +937,17 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
     let config_put_router = Router::new()
         .route("/api/config", put(api::handle_api_config_put))
         .layer(RequestBodyLimitLayer::new(1_048_576));
+
+    // A2A routes need a larger body limit (configurable, default 10MB) to
+    // support binary message parts.
+    let a2a_router = Router::new()
+        .route("/.well-known/agent-card.json", get(a2a::handle_agent_card))
+        .route("/message:send", post(a2a::handle_message_send_rest))
+        .route("/message:stream", post(a2a::handle_message_stream_rest))
+        .route("/tasks/{id}", get(a2a::handle_tasks_get_rest))
+        .route("/tasks/{id}:cancel", post(a2a::handle_tasks_cancel_rest))
+        .route("/a2a", post(a2a::handle_a2a_rpc))
+        .layer(RequestBodyLimitLayer::new(config.a2a.body_limit_bytes));
 
     // Build router with middleware
     let inner = Router::new()
@@ -1009,18 +1029,8 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
             "/api/canvas/{id}/history",
             get(canvas::handle_canvas_history),
         )
-        // ── A2A (Agent-to-Agent) protocol routes ──
-        .route(
-            "/.well-known/agent-card.json",
-            get(a2a::handle_agent_card),
-        )
-        // v1.0 REST-style path bindings
-        .route("/message:send", post(a2a::handle_message_send_rest))
-        .route("/message:stream", post(a2a::handle_message_stream_rest))
-        .route("/tasks/{id}", get(a2a::handle_tasks_get_rest))
-        .route("/tasks/{id}:cancel", post(a2a::handle_tasks_cancel_rest))
-        // v0.3 backward-compatibility (unified JSON-RPC endpoint)
-        .route("/a2a", post(a2a::handle_a2a_rpc));
+        // ── A2A (Agent-to-Agent) protocol routes (with custom body limit) ──
+        .merge(a2a_router);
 
     // ── WebAuthn hardware key authentication API (requires webauthn feature) ──
     #[cfg(feature = "webauthn")]

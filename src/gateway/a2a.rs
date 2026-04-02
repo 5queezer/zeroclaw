@@ -41,13 +41,56 @@ const MAX_TASKS: usize = 10_000;
 /// In-memory store for A2A task state.
 pub struct TaskStore {
     tasks: RwLock<HashMap<String, Task>>,
+    /// Tracks when tasks entered a terminal state for TTL-based eviction.
+    timestamps: RwLock<HashMap<String, std::time::Instant>>,
 }
 
 impl TaskStore {
     pub fn new() -> Self {
         Self {
             tasks: RwLock::new(HashMap::new()),
+            timestamps: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// Record the instant a task became terminal (Completed, Failed, Canceled, Rejected).
+    pub fn mark_terminal(&self, task_id: &str) {
+        // Use try_write to avoid blocking; if the lock is held, the timestamp
+        // will be recorded on the next eviction pass or mark_terminal call.
+        if let Ok(mut ts) = self.timestamps.try_write() {
+            ts.insert(task_id.to_string(), std::time::Instant::now());
+        }
+    }
+
+    /// Remove terminal tasks whose timestamp is older than `ttl`.
+    /// Returns the number of evicted tasks.
+    pub async fn evict_expired(&self, ttl: std::time::Duration) -> usize {
+        let now = std::time::Instant::now();
+
+        // First, collect task IDs to evict.
+        let expired_ids: Vec<String> = {
+            let ts = self.timestamps.read().await;
+            ts.iter()
+                .filter(|(_, instant)| now.duration_since(**instant) > ttl)
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+
+        if expired_ids.is_empty() {
+            return 0;
+        }
+
+        // Remove from both maps.
+        let mut tasks = self.tasks.write().await;
+        let mut ts = self.timestamps.write().await;
+        let mut count = 0;
+        for id in &expired_ids {
+            if tasks.remove(id).is_some() {
+                count += 1;
+            }
+            ts.remove(id);
+        }
+        count
     }
 }
 
@@ -55,6 +98,25 @@ impl Default for TaskStore {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Spawn a background task that periodically evicts expired terminal tasks.
+pub fn spawn_eviction_task(
+    task_store: Arc<TaskStore>,
+    ttl_secs: u64,
+    interval_secs: u64,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let ttl = std::time::Duration::from_secs(ttl_secs);
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+        loop {
+            interval.tick().await;
+            let evicted = task_store.evict_expired(ttl).await;
+            if evicted > 0 {
+                tracing::debug!(evicted, "A2A task store eviction pass");
+            }
+        }
+    })
 }
 
 // ── v1.0 Protocol Types ─────────────────────────────────────────
@@ -467,9 +529,23 @@ async fn handle_message_send(
         }
     };
 
+    // Check for return_immediately flag in configuration.
+    let return_immediately = req
+        .params
+        .pointer("/configuration/returnImmediately")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
     let task_id = uuid::Uuid::new_v4().to_string();
 
-    // Store task as working (enforce capacity limit to prevent memory exhaustion)
+    // Choose initial state: Submitted when async, Working when synchronous.
+    let initial_state = if return_immediately {
+        A2aTaskState::Submitted
+    } else {
+        A2aTaskState::Working
+    };
+
+    // Store task (enforce capacity limit to prevent memory exhaustion)
     {
         let mut tasks = task_store.tasks.write().await;
         if tasks.len() >= MAX_TASKS {
@@ -491,19 +567,144 @@ async fn handle_message_send(
             Task {
                 id: task_id.clone(),
                 status: TaskStatus {
-                    state: A2aTaskState::Working,
+                    state: initial_state,
                     message: None,
                     timestamp: Some(chrono::Utc::now().to_rfc3339()),
                 },
                 context_id: Some(context_id.clone()),
                 artifacts: None,
-                history: None,
+                history: Some(vec![inbound_msg.clone()]),
                 metadata: None,
             },
         );
     }
 
-    // Process via agent pipeline
+    // If return_immediately, spawn background processing and return Submitted task.
+    if return_immediately {
+        let bg_store = Arc::clone(task_store);
+        let config = state.config.lock().clone();
+        let tid = task_id.clone();
+        let ctx = context_id.clone();
+        let telegram_notify = config.a2a.notify_chat_id.and_then(|chat_id| {
+            config
+                .channels_config
+                .telegram
+                .as_ref()
+                .map(|t| (t.bot_token.clone(), chat_id))
+        });
+
+        tokio::spawn(async move {
+            let session_id = format!("a2a-{tid}");
+            match Box::pin(crate::agent::process_message(
+                config,
+                &message_text,
+                Some(&session_id),
+            ))
+            .await
+            {
+                Ok(response) => {
+                    if let Some((ref token, chat_id)) = telegram_notify {
+                        let notice = format!(
+                            "\u{1f4e8} *A2A received:* _{}_\n\n{}",
+                            message_text.replace('*', "\\*").replace('_', "\\_"),
+                            response
+                        );
+                        notify_telegram_chat(token, chat_id, &notice).await;
+                    }
+
+                    let response_msg = Message {
+                        role: "ROLE_AGENT".to_string(),
+                        parts: vec![Part::Text {
+                            text: response.clone(),
+                            metadata: None,
+                        }],
+                        message_id: uuid::Uuid::new_v4().to_string(),
+                        context_id: Some(ctx.clone()),
+                        metadata: None,
+                    };
+                    let artifact = Artifact {
+                        artifact_id: uuid::Uuid::new_v4().to_string(),
+                        name: Some("response".to_string()),
+                        description: None,
+                        parts: vec![Part::Text {
+                            text: response,
+                            metadata: None,
+                        }],
+                        metadata: None,
+                        extensions: None,
+                    };
+                    let task = Task {
+                        id: tid.clone(),
+                        status: TaskStatus {
+                            state: A2aTaskState::Completed,
+                            message: Some(response_msg),
+                            timestamp: Some(chrono::Utc::now().to_rfc3339()),
+                        },
+                        context_id: Some(ctx),
+                        artifacts: Some(vec![artifact]),
+                        history: Some(vec![inbound_msg]),
+                        metadata: None,
+                    };
+                    let mut tasks = bg_store.tasks.write().await;
+                    if !tasks
+                        .get(&tid)
+                        .is_some_and(|t| t.status.state == A2aTaskState::Canceled)
+                    {
+                        tasks.insert(tid.clone(), task);
+                    }
+                    drop(tasks);
+                    bg_store.mark_terminal(&tid);
+                }
+                Err(e) => {
+                    tracing::error!(task_id = %tid, error = %e, "A2A async task failed");
+                    let error_msg = Message {
+                        role: "ROLE_AGENT".to_string(),
+                        parts: vec![Part::Text {
+                            text: "Internal processing error".to_string(),
+                            metadata: None,
+                        }],
+                        message_id: uuid::Uuid::new_v4().to_string(),
+                        context_id: Some(ctx.clone()),
+                        metadata: None,
+                    };
+                    let task = Task {
+                        id: tid.clone(),
+                        status: TaskStatus {
+                            state: A2aTaskState::Failed,
+                            message: Some(error_msg),
+                            timestamp: Some(chrono::Utc::now().to_rfc3339()),
+                        },
+                        context_id: Some(ctx),
+                        artifacts: None,
+                        history: Some(vec![inbound_msg]),
+                        metadata: None,
+                    };
+                    let mut tasks = bg_store.tasks.write().await;
+                    if !tasks
+                        .get(&tid)
+                        .is_some_and(|t| t.status.state == A2aTaskState::Canceled)
+                    {
+                        tasks.insert(tid.clone(), task);
+                    }
+                    drop(tasks);
+                    bg_store.mark_terminal(&tid);
+                }
+            }
+        });
+
+        let tasks = task_store.tasks.read().await;
+        let task = tasks.get(&task_id).cloned().unwrap();
+        return (
+            StatusCode::OK,
+            Json(json!({
+                "jsonrpc": "2.0",
+                "id": req.id,
+                "result": task
+            })),
+        );
+    }
+
+    // Synchronous processing (default).
     let config = state.config.lock().clone();
     let telegram_notify = config.a2a.notify_chat_id.and_then(|chat_id| {
         config
@@ -583,6 +784,8 @@ async fn handle_message_send(
                 }
             };
 
+            task_store.mark_terminal(&task_id);
+
             (
                 StatusCode::OK,
                 Json(json!({
@@ -632,6 +835,8 @@ async fn handle_message_send(
                     task
                 }
             };
+
+            task_store.mark_terminal(&task_id);
 
             (
                 StatusCode::OK,
@@ -688,22 +893,32 @@ async fn handle_tasks_cancel(
         );
     }
 
-    let mut tasks = task_store.tasks.write().await;
-    match tasks.get_mut(task_id) {
-        Some(task) => {
-            if task.status.state.is_terminal() {
-                return (
-                    StatusCode::OK,
-                    Json(rpc_error(
-                        req.id,
-                        -32002,
-                        "Task is already in a terminal state",
-                    )),
-                );
+    let result = {
+        let mut tasks = task_store.tasks.write().await;
+        match tasks.get_mut(task_id) {
+            Some(task) => {
+                if task.status.state.is_terminal() {
+                    return (
+                        StatusCode::OK,
+                        Json(rpc_error(
+                            req.id,
+                            -32002,
+                            "Task is already in a terminal state",
+                        )),
+                    );
+                }
+                task.status.state = A2aTaskState::Canceled;
+                task.status.timestamp = Some(chrono::Utc::now().to_rfc3339());
+                let task = task.clone();
+                Some((task_id.to_string(), task))
             }
-            task.status.state = A2aTaskState::Canceled;
-            task.status.timestamp = Some(chrono::Utc::now().to_rfc3339());
-            let task = task.clone();
+            None => None,
+        }
+    };
+
+    match result {
+        Some((tid, task)) => {
+            task_store.mark_terminal(&tid);
             (
                 StatusCode::OK,
                 Json(json!({
@@ -1017,10 +1232,13 @@ pub async fn handle_message_stream_rest(
                     );
 
                     // Update task store — always runs even if client disconnected
-                    let mut tasks = task_store.tasks.write().await;
-                    if let Some(t) = tasks.get_mut(&tid) {
-                        t.status = fail_status;
+                    {
+                        let mut tasks = task_store.tasks.write().await;
+                        if let Some(t) = tasks.get_mut(&tid) {
+                            t.status = fail_status;
+                        }
                     }
+                    task_store.mark_terminal(&tid);
                     return;
                 }
             };
@@ -1215,6 +1433,9 @@ pub async fn handle_message_stream_rest(
                     t.artifacts = final_artifact.as_ref().map(|a| vec![a.clone()]);
                 }
             }
+            if final_state.is_terminal() {
+                task_store.mark_terminal(&tid);
+            }
 
             // Emit final status_update (best-effort — client may be gone)
             let final_event = TaskStatusUpdateEvent {
@@ -1239,8 +1460,7 @@ pub async fn handle_message_stream_rest(
     });
 
     // ── SSE stream reads from channel — disconnect-safe ─────────
-    let stream =
-        tokio_stream::wrappers::ReceiverStream::new(sse_rx).map(Ok::<_, Infallible>);
+    let stream = tokio_stream::wrappers::ReceiverStream::new(sse_rx).map(Ok::<_, Infallible>);
 
     Sse::new(stream)
         .keep_alive(KeepAlive::default())
@@ -2359,5 +2579,121 @@ mod tests {
         assert_eq!(json["artifact"]["artifactId"], "a-1");
         assert_eq!(json["artifact"]["parts"][0]["text"], "chunk");
         assert!(json["artifact"]["metadata"]["append"].as_bool().unwrap());
+    }
+
+    // ── Eviction tests ──────────────────────────────────────────
+
+    fn insert_task(store: &TaskStore, id: &str, state: A2aTaskState) {
+        // Use try_write (sync) for test convenience — store is uncontested.
+        let mut tasks = store.tasks.try_write().unwrap();
+        tasks.insert(
+            id.to_string(),
+            Task {
+                id: id.to_string(),
+                status: TaskStatus {
+                    state,
+                    message: None,
+                    timestamp: None,
+                },
+                context_id: None,
+                artifacts: None,
+                history: None,
+                metadata: None,
+            },
+        );
+    }
+
+    #[tokio::test]
+    async fn mark_terminal_records_timestamp() {
+        let store = TaskStore::new();
+        insert_task(&store, "t1", A2aTaskState::Completed);
+        store.mark_terminal("t1");
+
+        let ts = store.timestamps.read().await;
+        assert!(ts.contains_key("t1"));
+    }
+
+    #[tokio::test]
+    async fn eviction_removes_expired_terminal_tasks() {
+        let store = TaskStore::new();
+        insert_task(&store, "t1", A2aTaskState::Completed);
+        insert_task(&store, "t2", A2aTaskState::Failed);
+
+        // Manually insert timestamps in the past
+        {
+            let mut ts = store.timestamps.write().await;
+            let past = std::time::Instant::now()
+                .checked_sub(Duration::from_secs(120))
+                .unwrap();
+            ts.insert("t1".to_string(), past);
+            ts.insert("t2".to_string(), past);
+        }
+
+        let evicted = store.evict_expired(Duration::from_secs(60)).await;
+        assert_eq!(evicted, 2);
+
+        let tasks = store.tasks.read().await;
+        assert!(!tasks.contains_key("t1"));
+        assert!(!tasks.contains_key("t2"));
+    }
+
+    #[tokio::test]
+    async fn eviction_preserves_non_terminal_tasks() {
+        let store = TaskStore::new();
+        insert_task(&store, "working", A2aTaskState::Working);
+        insert_task(&store, "submitted", A2aTaskState::Submitted);
+        // Non-terminal tasks have no timestamp entry, so they survive eviction.
+
+        let evicted = store.evict_expired(Duration::from_secs(0)).await;
+        assert_eq!(evicted, 0);
+
+        let tasks = store.tasks.read().await;
+        assert!(tasks.contains_key("working"));
+        assert!(tasks.contains_key("submitted"));
+    }
+
+    #[tokio::test]
+    async fn eviction_preserves_recent_terminal_tasks() {
+        let store = TaskStore::new();
+        insert_task(&store, "recent", A2aTaskState::Completed);
+        store.mark_terminal("recent");
+
+        // TTL of 1 hour — the task was just marked terminal, so it should survive.
+        let evicted = store.evict_expired(Duration::from_secs(3600)).await;
+        assert_eq!(evicted, 0);
+
+        let tasks = store.tasks.read().await;
+        assert!(tasks.contains_key("recent"));
+    }
+
+    #[tokio::test]
+    async fn return_immediately_returns_submitted_state() {
+        let state = a2a_test_state(None, false, &[]);
+        let task_store = state.a2a_task_store.as_ref().unwrap();
+
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: json!(99),
+            method: "message/send".into(),
+            params: json!({
+                "message": {
+                    "role": "ROLE_USER",
+                    "messageId": "m-1",
+                    "parts": [{"text": "hello"}],
+                },
+                "configuration": {
+                    "returnImmediately": true
+                }
+            }),
+        };
+
+        let (status, Json(body)) = Box::pin(handle_message_send(&state, task_store, req)).await;
+        assert_eq!(status, StatusCode::OK);
+        // Task should be in Submitted state (processing hasn't completed yet).
+        assert_eq!(
+            body["result"]["status"]["state"], "TASK_STATE_SUBMITTED",
+            "return_immediately should return Submitted state"
+        );
+        assert!(body["result"]["id"].is_string());
     }
 }
