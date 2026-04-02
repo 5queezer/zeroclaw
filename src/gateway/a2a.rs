@@ -6,12 +6,16 @@
 //! - `message/stream` (Server-Sent Events streaming)
 //! - `tasks/get` (polling)
 //! - `tasks/list` (cursor-based pagination with filters)
+//! - `tasks/getByContextId` (multi-turn conversation threading)
+//! - `tasks/cancel` (cancel in-flight tasks)
+//! - `return_immediately` async task execution
+//! - TTL-based task store eviction
 //! - Bearer token authentication
+//! - v1.0 error model (`google.rpc.Status` with `ErrorInfo` details)
 //!
 //! **Not yet implemented:**
 //! - Push notifications
 //! - Structured/binary message parts (`data`, `raw`)
-//! - Async task execution
 //! - Task persistence
 
 use super::AppState;
