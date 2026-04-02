@@ -74,7 +74,7 @@ pub async fn check(target_version: Option<&str>, include_pre: bool) -> Result<Up
             })
         }
         None => {
-            let url = format!("{GITHUB_RELEASES_URL}?per_page=30");
+            let url = format!("{GITHUB_RELEASES_URL}?per_page=100");
 
             let resp = client
                 .get(&url)
@@ -88,17 +88,7 @@ pub async fn check(target_version: Option<&str>, include_pre: bool) -> Result<Up
 
             let releases: Vec<serde_json::Value> = resp.json().await?;
 
-            let release = if include_pre {
-                releases.first().cloned()
-            } else {
-                // Prefer newest stable; fall back to newest pre-release
-                let stable = releases
-                    .iter()
-                    .find(|r| r["prerelease"].as_bool() != Some(true));
-                stable.or_else(|| releases.first()).cloned()
-            };
-
-            let release = release.context(
+            let release = select_release(&releases, include_pre).cloned().context(
                 "no releases found — publish a release on GitHub first, or build from source",
             )?;
 
@@ -250,6 +240,22 @@ fn current_target_triple() -> &'static str {
         }
     } else {
         "unknown"
+    }
+}
+
+/// Pick the best release from a list (ordered newest-first).
+///
+/// If `include_pre` is true, returns the newest release regardless.
+/// Otherwise prefers the newest stable release, falling back to the
+/// newest pre-release when no stable release exists.
+fn select_release(releases: &[serde_json::Value], include_pre: bool) -> Option<&serde_json::Value> {
+    if include_pre {
+        releases.first()
+    } else {
+        let stable = releases
+            .iter()
+            .find(|r| r["prerelease"].as_bool() != Some(true));
+        stable.or_else(|| releases.first())
     }
 }
 
@@ -665,40 +671,39 @@ mod tests {
 
     #[test]
     fn select_release_prefers_stable() {
-        let releases = [
+        let releases = vec![
             serde_json::json!({"tag_name": "v0.2.0-beta.1", "prerelease": true}),
             serde_json::json!({"tag_name": "v0.1.0", "prerelease": false}),
         ];
-        // Without --pre: should pick v0.1.0 (stable)
-        let stable = releases
-            .iter()
-            .find(|r| r["prerelease"].as_bool() != Some(true));
-        assert_eq!(stable.unwrap()["tag_name"], "v0.1.0");
+        let selected = select_release(&releases, false).unwrap();
+        assert_eq!(selected["tag_name"], "v0.1.0");
     }
 
     #[test]
     fn select_release_falls_back_to_prerelease() {
-        let releases = [
+        let releases = vec![
             serde_json::json!({"tag_name": "v0.2.0-beta.2", "prerelease": true}),
             serde_json::json!({"tag_name": "v0.2.0-beta.1", "prerelease": true}),
         ];
-        // Without --pre: no stable exists, should fall back to first (newest)
-        let stable = releases
-            .iter()
-            .find(|r| r["prerelease"].as_bool() != Some(true));
-        let selected = stable.or_else(|| releases.first());
-        assert_eq!(selected.unwrap()["tag_name"], "v0.2.0-beta.2");
+        let selected = select_release(&releases, false).unwrap();
+        assert_eq!(selected["tag_name"], "v0.2.0-beta.2");
     }
 
     #[test]
     fn select_release_pre_flag_picks_newest() {
-        let releases = [
+        let releases = vec![
             serde_json::json!({"tag_name": "v0.2.0-beta.1", "prerelease": true}),
             serde_json::json!({"tag_name": "v0.1.0", "prerelease": false}),
         ];
-        // With --pre: should pick v0.2.0-beta.1 (newest)
-        let selected = releases.first();
-        assert_eq!(selected.unwrap()["tag_name"], "v0.2.0-beta.1");
+        let selected = select_release(&releases, true).unwrap();
+        assert_eq!(selected["tag_name"], "v0.2.0-beta.1");
+    }
+
+    #[test]
+    fn select_release_empty_returns_none() {
+        let releases: Vec<serde_json::Value> = vec![];
+        assert!(select_release(&releases, false).is_none());
+        assert!(select_release(&releases, true).is_none());
     }
 
     #[test]
