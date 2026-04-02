@@ -1106,6 +1106,13 @@ impl SecurityPolicy {
             return false;
         }
 
+        // Short-circuit: fully-permissive mode (security disabled) bypasses all
+        // metacharacter and allowlist checks.  See PR #77.
+        let has_wildcard = self.allowed_commands.iter().any(|c| c.trim() == "*");
+        if self.autonomy == AutonomyLevel::Full && has_wildcard && !self.block_high_risk_commands {
+            return !command.trim().is_empty();
+        }
+
         // Block subshell/expansion operators — these allow hiding arbitrary
         // commands inside an allowed command (e.g. `echo $(rm -rf /)`) and
         // bypassing path checks through variable indirection. The helper below
@@ -1590,7 +1597,7 @@ impl SecurityPolicy {
                 max_cost_per_day_cents: u32::MAX,
                 require_approval_for_medium_risk: false,
                 block_high_risk_commands: false,
-                shell_env_passthrough: Vec::new(),
+                shell_env_passthrough: autonomy_config.shell_env_passthrough.clone(),
                 shell_timeout_secs: autonomy_config.shell_timeout_secs,
                 tracker: PerSenderTracker::new(),
             };
@@ -3425,5 +3432,52 @@ mod tests {
         let t = PerSenderTracker::new();
         // Key "ghost" has never been recorded — should not be exhausted at max=1
         assert!(!t.is_exhausted("ghost", 1));
+    }
+
+    // ── from_config with security_enabled=false ─────────────
+
+    #[test]
+    fn from_config_security_disabled_returns_permissive_policy() {
+        let autonomy_config = crate::config::AutonomyConfig {
+            level: AutonomyLevel::Supervised,
+            workspace_only: true,
+            allowed_commands: vec!["echo".into()],
+            forbidden_paths: vec!["/secret".into()],
+            max_actions_per_hour: 10,
+            max_cost_per_day_cents: 100,
+            require_approval_for_medium_risk: true,
+            block_high_risk_commands: true,
+            shell_env_passthrough: vec!["DATABASE_URL".into(), "HOME".into()],
+            ..crate::config::AutonomyConfig::default()
+        };
+        let workspace = PathBuf::from("/tmp/test-disabled");
+        let policy = SecurityPolicy::from_config(&autonomy_config, &workspace, false);
+
+        // Core permissive fields
+        assert_eq!(policy.autonomy, AutonomyLevel::Full);
+        assert!(!policy.workspace_only);
+        assert_eq!(policy.allowed_commands, vec!["*"]);
+        assert!(policy.forbidden_paths.is_empty());
+        assert_eq!(policy.max_actions_per_hour, u32::MAX);
+        assert!(!policy.require_approval_for_medium_risk);
+        assert!(!policy.block_high_risk_commands);
+
+        // shell_env_passthrough must be preserved from config
+        assert_eq!(policy.shell_env_passthrough, vec!["DATABASE_URL", "HOME"]);
+
+        // Commands that would normally be rejected must now pass
+        assert!(policy.is_command_allowed("echo `whoami`"));
+        assert!(policy.is_command_allowed("echo $(id)"));
+        assert!(policy.is_command_allowed("cat /etc/passwd > /tmp/out"));
+        assert!(policy.is_command_allowed("echo foo & echo bar"));
+        assert!(policy.is_command_allowed("tee /tmp/log"));
+
+        // validate_command_execution must also succeed
+        assert!(
+            policy
+                .validate_command_execution("echo `whoami`", false)
+                .is_ok()
+        );
+        assert!(policy.validate_command_execution("rm -rf /", false).is_ok());
     }
 }

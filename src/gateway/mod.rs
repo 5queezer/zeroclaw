@@ -439,6 +439,12 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
     )?);
     let runtime: Arc<dyn runtime::RuntimeAdapter> =
         Arc::from(runtime::create_runtime(&config.runtime)?);
+    if !config.security.enabled {
+        tracing::warn!(
+            "Security is DISABLED via [security].enabled=false: running with permissive policy \
+             (no workspace restriction, commands unrestricted, no approval requirements)."
+        );
+    }
     let security = Arc::new(SecurityPolicy::from_config(
         &config.autonomy,
         &config.workspace_dir,

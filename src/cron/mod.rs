@@ -1153,4 +1153,26 @@ mod tests {
         assert!(!due[0].pending_approval);
         assert!(due[0].created_by.is_none());
     }
+
+    #[test]
+    fn security_disabled_allows_all_commands() {
+        let tmp = TempDir::new().unwrap();
+        let mut config = test_config(&tmp);
+        config.security.enabled = false;
+
+        let security = SecurityPolicy::from_config(
+            &config.autonomy,
+            &config.workspace_dir,
+            config.security.enabled,
+        );
+
+        // Commands that would normally be blocked must be allowed
+        assert!(security.is_command_allowed("echo `whoami`"));
+        assert!(security.is_command_allowed("rm -rf /"));
+        assert!(
+            security
+                .validate_command_execution("echo $(id)", false)
+                .is_ok()
+        );
+    }
 }
