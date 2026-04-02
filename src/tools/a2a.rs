@@ -12,6 +12,19 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 
+/// Parameters for the `list` action — bundled to keep argument count manageable.
+#[derive(Default)]
+struct ListParams<'a> {
+    page_size: Option<u64>,
+    page_token: Option<&'a str>,
+    context_id: Option<&'a str>,
+    status: Option<&'a str>,
+    history_length: Option<u64>,
+    include_artifacts: Option<bool>,
+    status_timestamp_after: Option<&'a str>,
+    tenant: Option<&'a str>,
+}
+
 /// Outbound A2A client tool — discovers remote agents and sends/retrieves tasks.
 pub struct A2aTool {
     security: Arc<SecurityPolicy>,
@@ -240,13 +253,7 @@ impl A2aTool {
         &self,
         url: &str,
         bearer_token: Option<&str>,
-        page_size: Option<u64>,
-        page_token: Option<&str>,
-        context_id: Option<&str>,
-        status: Option<&str>,
-        history_length: Option<u64>,
-        include_artifacts: Option<bool>,
-        status_timestamp_after: Option<&str>,
+        params: ListParams<'_>,
     ) -> anyhow::Result<ToolResult> {
         let mut list_url = self.validate_url(url)?;
         list_url
@@ -256,26 +263,29 @@ impl A2aTool {
 
         {
             let mut query = list_url.query_pairs_mut();
-            if let Some(ps) = page_size {
+            if let Some(ps) = params.page_size {
                 query.append_pair("page_size", &ps.to_string());
             }
-            if let Some(pt) = page_token {
+            if let Some(pt) = params.page_token {
                 query.append_pair("page_token", pt);
             }
-            if let Some(ctx) = context_id {
+            if let Some(ctx) = params.context_id {
                 query.append_pair("context_id", ctx);
             }
-            if let Some(s) = status {
+            if let Some(s) = params.status {
                 query.append_pair("status", s);
             }
-            if let Some(hl) = history_length {
+            if let Some(hl) = params.history_length {
                 query.append_pair("history_length", &hl.to_string());
             }
-            if let Some(ia) = include_artifacts {
+            if let Some(ia) = params.include_artifacts {
                 query.append_pair("include_artifacts", &ia.to_string());
             }
-            if let Some(sta) = status_timestamp_after {
+            if let Some(sta) = params.status_timestamp_after {
                 query.append_pair("status_timestamp_after", sta);
+            }
+            if let Some(t) = params.tenant {
+                query.append_pair("tenant", t);
             }
         }
 
@@ -409,6 +419,10 @@ impl Tool for A2aTool {
                 "status_timestamp_after": {
                     "type": "string",
                     "description": "Filter tasks with status timestamp after this ISO 8601 date (for list action)"
+                },
+                "tenant": {
+                    "type": "string",
+                    "description": "Tenant identifier for scoping task listings (for list action)"
                 }
             },
             "required": ["action", "url"]
@@ -512,26 +526,20 @@ impl Tool for A2aTool {
                     .await
             }
             "list" => {
-                let page_size = args.get("page_size").and_then(|v| v.as_u64());
-                let page_token = args.get("page_token").and_then(|v| v.as_str());
-                let context_id = args.get("context_id").and_then(|v| v.as_str());
-                let status = args.get("status").and_then(|v| v.as_str());
-                let history_length = args.get("history_length").and_then(|v| v.as_u64());
-                let include_artifacts = args.get("include_artifacts").and_then(|v| v.as_bool());
-                let status_timestamp_after =
-                    args.get("status_timestamp_after").and_then(|v| v.as_str());
-                self.action_list(
-                    &url,
-                    bearer_token.as_deref(),
-                    page_size,
-                    page_token,
-                    context_id,
-                    status,
-                    history_length,
-                    include_artifacts,
-                    status_timestamp_after,
-                )
-                .await
+                let params = ListParams {
+                    page_size: args.get("page_size").and_then(|v| v.as_u64()),
+                    page_token: args.get("page_token").and_then(|v| v.as_str()),
+                    context_id: args.get("context_id").and_then(|v| v.as_str()),
+                    status: args.get("status").and_then(|v| v.as_str()),
+                    history_length: args.get("history_length").and_then(|v| v.as_u64()),
+                    include_artifacts: args.get("include_artifacts").and_then(|v| v.as_bool()),
+                    status_timestamp_after: args
+                        .get("status_timestamp_after")
+                        .and_then(|v| v.as_str()),
+                    tenant: args.get("tenant").and_then(|v| v.as_str()),
+                };
+                self.action_list(&url, bearer_token.as_deref(), params)
+                    .await
             }
             other => Ok(ToolResult {
                 success: false,
