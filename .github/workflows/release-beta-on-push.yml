@@ -247,17 +247,17 @@ jobs:
         if: matrix.ndk
         run: echo "$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
 
+      - name: Install cross
+        if: matrix.use_cross
+        run: cargo install cross --locked
+
       - name: Build release
         shell: bash
         run: |
           if [ -n "${{ matrix.linker_env || '' }}" ] && [ -n "${{ matrix.linker || '' }}" ]; then
             export "${{ matrix.linker_env }}=${{ matrix.linker }}"
           fi
-          BUILD_CMD="cargo"
-          if [ "${{ matrix.use_cross || 'false' }}" = "true" ]; then
-            cargo install cross --locked
-            BUILD_CMD="cross"
-          fi
+          BUILD_CMD="${{ matrix.use_cross && 'cross' || 'cargo' }}"
           $BUILD_CMD build --release --locked --features "${{ matrix.features || env.RELEASE_CARGO_FEATURES }}" --target ${{ matrix.target }}
 
       - name: Check binary size
