@@ -23,7 +23,7 @@ pub struct UpdateInfo {
 /// - Default: prefer newest stable; fall back to newest pre-release.
 /// - `include_pre`: pick the newest release regardless of pre-release status.
 pub async fn check(target_version: Option<&str>, include_pre: bool) -> Result<UpdateInfo> {
-    let current = env!("CARGO_PKG_VERSION").to_string();
+    let current = env!("HRAFN_VERSION").to_string();
 
     let client = reqwest::Client::builder()
         .user_agent(format!("hrafn/{current}"))
@@ -272,7 +272,7 @@ fn version_is_newer(current: &str, candidate: &str) -> bool {
 
 async fn download_binary(url: &str, dest: &Path) -> Result<()> {
     let client = reqwest::Client::builder()
-        .user_agent(format!("hrafn/{}", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("hrafn/{}", env!("HRAFN_VERSION")))
         .timeout(std::time::Duration::from_secs(300))
         .build()?;
 

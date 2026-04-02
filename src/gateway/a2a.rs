@@ -411,7 +411,7 @@ pub fn generate_agent_card(config: &crate::config::Config) -> serde_json::Value 
     let version = a2a
         .version
         .clone()
-        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+        .unwrap_or_else(|| env!("HRAFN_VERSION").to_string());
 
     let base_url = a2a
         .public_url
