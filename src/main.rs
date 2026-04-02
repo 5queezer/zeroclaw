@@ -153,7 +153,7 @@ enum EstopLevelArg {
 #[derive(Parser, Debug)]
 #[command(name = "hrafn")]
 #[command(author = "theonlyhennygod")]
-#[command(version)]
+#[command(version = env!("HRAFN_VERSION"))]
 #[command(about = "The fastest, smallest AI assistant.", long_about = None)]
 struct Cli {
     #[arg(long, global = true)]
@@ -1218,7 +1218,7 @@ async fn main() -> Result<()> {
             }
             println!("🦀 Hrafn Status");
             println!();
-            println!("Version:     {}", env!("CARGO_PKG_VERSION"));
+            println!("Version:     {}", env!("HRAFN_VERSION"));
             println!("Workspace:   {}", config.workspace_dir.display());
             println!("Config:      {}", config.config_path.display());
             println!();

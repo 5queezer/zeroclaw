@@ -202,7 +202,7 @@ fn check_security_policy(config: &crate::config::Config) -> CheckResult {
 }
 
 fn check_version() -> CheckResult {
-    let version = env!("CARGO_PKG_VERSION");
+    let version = env!("HRAFN_VERSION");
     CheckResult::pass("version", format!("v{version}"))
 }
 
