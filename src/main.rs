@@ -530,10 +530,12 @@ and smoke test. Automatic rollback on failure.
 
 Use --check to only check for updates without installing.
 Use --force to skip the confirmation prompt.
+Use --pre to include pre-releases when checking for updates.
 Use --version to target a specific release instead of latest.
 
 Examples:
-  hrafn update                      # download and install latest
+  hrafn update                      # download and install latest stable
+  hrafn update --pre                # include pre-releases
   hrafn update --check              # check only, don't install
   hrafn update --force              # install without confirmation
   hrafn update --version 0.6.0      # install specific version")]
@@ -547,6 +549,9 @@ Examples:
         /// Target version (default: latest)
         #[arg(long)]
         version: Option<String>,
+        /// Include pre-releases when checking for updates
+        #[arg(long)]
+        pre: bool,
     },
 
     /// Run diagnostic self-tests
@@ -1589,20 +1594,26 @@ async fn main() -> Result<()> {
             check,
             force: _force,
             version,
+            pre,
         } => {
             if check {
-                let info = commands::update::check(version.as_deref()).await?;
+                let info = commands::update::check(version.as_deref(), pre).await?;
                 if info.is_newer {
+                    let pre_tag = if info.is_prerelease {
+                        " (pre-release)"
+                    } else {
+                        ""
+                    };
                     println!(
-                        "Update available: v{} -> v{}",
-                        info.current_version, info.latest_version
+                        "Update available: v{} -> v{}{}",
+                        info.current_version, info.latest_version, pre_tag
                     );
                 } else {
                     println!("Already up to date (v{}).", info.current_version);
                 }
                 Ok(())
             } else {
-                commands::update::run(version.as_deref()).await
+                commands::update::run(version.as_deref(), pre).await
             }
         }
 
