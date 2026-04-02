@@ -4,6 +4,28 @@ use std::process::Command;
 use std::time::SystemTime;
 
 fn main() {
+    // Emit HRAFN_VERSION for compile-time version string.
+    // Priority: HRAFN_VERSION env > git describe > CARGO_PKG_VERSION
+    println!("cargo:rerun-if-env-changed=HRAFN_VERSION");
+    let version = if let Ok(v) = std::env::var("HRAFN_VERSION") {
+        v.trim_start_matches('v').to_string()
+    } else if let Ok(output) = Command::new("git")
+        .args(["describe", "--tags", "--always"])
+        .output()
+    {
+        if output.status.success() {
+            String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .trim_start_matches('v')
+                .to_string()
+        } else {
+            std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "unknown".to_string())
+        }
+    } else {
+        std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "unknown".to_string())
+    };
+    println!("cargo:rustc-env=HRAFN_VERSION={version}");
+
     let dist_dir = Path::new("web/dist");
     let web_dir = Path::new("web");
 

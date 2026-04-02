@@ -89,17 +89,29 @@ Hrafn's architecture is **trait-based**. Every subsystem is a Rust trait. Swap i
 
 ```
 src/
-├── providers/      # LLM backends         → Provider trait
-├── channels/       # Messaging            → Channel trait
-├── tools/          # Agent capabilities   → Tool trait
-├── memory/         # Persistence          → Memory trait
-├── gateway/        # HTTP/WS control plane
-├── agent/          # Orchestration loop
-├── config/         # TOML configuration
-├── security/       # Policy, pairing, secret store
-├── observability/  # Metrics + tracing backends
-├── peripherals/    # Hardware peripherals (STM32, RPi GPIO)
-└── hardware/       # USB/serial device discovery
+├── agent/         # Orchestration loop
+├── config/        # TOML configuration
+├── providers/     # LLM backends          → Provider trait
+├── channels/      # Messaging platforms    → Channel trait
+├── tools/         # Agent capabilities     → Tool trait
+├── memory/        # Persistence            → Memory trait
+├── gateway/       # HTTP/WS control plane
+├── security/      # Policy, secrets, audit
+├── hardware/      # Device discovery, I2C/SPI/GPIO
+├── peripherals/   # Peripheral management  → Peripheral trait
+├── runtime/       # Runtime adapters       → RuntimeAdapter trait
+├── observability/ # Metrics, tracing
+├── plugins/       # WASM plugin runtime
+├── daemon/        # Background service
+├── skills/        # Skill management
+├── rag/           # Retrieval-augmented generation
+├── hooks/         # Lifecycle hooks
+├── cron/          # Scheduled tasks
+├── identity/      # Identity management
+├── tunnel/        # Tunnel/relay support
+└── ...            # approval, auth, commands, cost, doctor, hands, health,
+                   # heartbeat, integrations, nodes, onboard, routines,
+                   # service, skillforge, sop, trust, verifiable_intent
 ```
 
 ### Compile-time modularity
@@ -169,6 +181,9 @@ OC Plugin → MCP Adapter (Node.js) → Hrafn tests it → Community validates
   → Port Queue → Native Rust implementation → Review & merge
 ```
 
+*OC Bridge is planned for a future release (M3).*
+
+
 ## Key Integrations
 
 ### MuninnDB
@@ -180,9 +195,9 @@ Cognitive memory backend with Ebbinghaus-curve decay (memories fade naturally) a
 backend = "muninndb"
 
 [memory.muninndb]
-url = "http://127.0.0.1:8475"
-vault = "default"
-# api_key = "your-key"  # optional, for secured instances
+url = "http://127.0.0.1:8475"   # optional; falls back to MUNINNDB_URL env var
+vault = "default"               # optional; falls back to MUNINNDB_VAULT env var
+# api_key = "your-api-key"     # optional; falls back to MUNINNDB_API_KEY env var
 ```
 
 ### A2A Protocol

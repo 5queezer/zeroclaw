@@ -224,7 +224,7 @@ impl AcpServer {
             "protocolVersion": "1.0",
             "serverInfo": {
                 "name": "hrafn-acp",
-                "version": env!("CARGO_PKG_VERSION"),
+                "version": env!("HRAFN_VERSION"),
             },
             "capabilities": {
                 "streaming": true,

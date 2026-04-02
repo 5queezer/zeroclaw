@@ -72,7 +72,7 @@ impl McpServer {
                 "capabilities": {},
                 "clientInfo": {
                     "name": "hrafn",
-                    "version": env!("CARGO_PKG_VERSION")
+                    "version": env!("HRAFN_VERSION")
                 }
             }),
         );

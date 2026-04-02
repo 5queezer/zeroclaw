@@ -259,6 +259,8 @@ jobs:
 
       - name: Build release
         shell: bash
+        env:
+          HRAFN_VERSION: ${{ needs.version.outputs.tag }}
         run: |
           if [ -n "${{ matrix.linker_env || '' }}" ] && [ -n "${{ matrix.linker || '' }}" ]; then
             export "${{ matrix.linker_env }}=${{ matrix.linker }}"

@@ -4,8 +4,7 @@ use anyhow::{Context, Result, bail};
 use std::path::Path;
 use tracing::{info, warn};
 
-const GITHUB_RELEASES_LATEST_URL: &str =
-    "https://api.github.com/repos/5queezer/hrafn/releases/latest";
+const GITHUB_RELEASES_URL: &str = "https://api.github.com/repos/5queezer/hrafn/releases";
 const GITHUB_RELEASES_TAG_URL: &str = "https://api.github.com/repos/5queezer/hrafn/releases/tags";
 
 #[derive(Debug)]
@@ -14,87 +13,127 @@ pub struct UpdateInfo {
     pub latest_version: String,
     pub download_url: Option<String>,
     pub is_newer: bool,
+    pub is_prerelease: bool,
 }
 
 /// Check for available updates without downloading.
 ///
-/// If `target_version` is `Some`, fetch that specific release tag instead of latest.
-pub async fn check(target_version: Option<&str>) -> Result<UpdateInfo> {
-    let current = env!("CARGO_PKG_VERSION").to_string();
+/// If `target_version` is `Some`, fetch that specific release tag.
+/// Otherwise, list recent releases and pick the best candidate:
+/// - Default: prefer newest stable; fall back to newest pre-release.
+/// - `include_pre`: pick the newest release regardless of pre-release status.
+pub async fn check(target_version: Option<&str>, include_pre: bool) -> Result<UpdateInfo> {
+    let current = env!("HRAFN_VERSION").to_string();
 
     let client = reqwest::Client::builder()
         .user_agent(format!("hrafn/{current}"))
         .timeout(std::time::Duration::from_secs(15))
         .build()?;
 
-    let url = match target_version {
+    match target_version {
         Some(v) => {
             let tag = if v.starts_with('v') {
                 v.to_string()
             } else {
                 format!("v{v}")
             };
-            format!("{GITHUB_RELEASES_TAG_URL}/{tag}")
-        }
-        None => GITHUB_RELEASES_LATEST_URL.to_string(),
-    };
+            let url = format!("{GITHUB_RELEASES_TAG_URL}/{tag}");
 
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .context("failed to reach GitHub releases API")?;
+            let resp = client
+                .get(&url)
+                .send()
+                .await
+                .context("failed to reach GitHub releases API")?;
 
-    let status = resp.status();
-    if !status.is_success() {
-        if status == reqwest::StatusCode::NOT_FOUND {
-            if let Some(v) = target_version {
-                let tag = if v.starts_with('v') {
-                    v.to_string()
-                } else {
-                    format!("v{v}")
-                };
-                bail!("release tag '{tag}' not found on GitHub — check that the tag is published");
+            let status = resp.status();
+            if !status.is_success() {
+                if status == reqwest::StatusCode::NOT_FOUND {
+                    bail!(
+                        "release tag '{tag}' not found on GitHub — check that the tag is published"
+                    );
+                }
+                bail!("GitHub API returned {status}");
             }
-            bail!("no releases found — publish a release on GitHub first, or build from source");
+
+            let release: serde_json::Value = resp.json().await?;
+            let version = release["tag_name"]
+                .as_str()
+                .unwrap_or("unknown")
+                .trim_start_matches('v')
+                .to_string();
+            let download_url = find_asset_url(&release);
+            let is_newer = version_is_newer(&current, &version);
+            let is_prerelease = release["prerelease"].as_bool() == Some(true);
+
+            Ok(UpdateInfo {
+                current_version: current,
+                latest_version: version,
+                download_url,
+                is_newer,
+                is_prerelease,
+            })
         }
-        bail!("GitHub API returned {status}");
+        None => {
+            let url = format!("{GITHUB_RELEASES_URL}?per_page=100");
+
+            let resp = client
+                .get(&url)
+                .send()
+                .await
+                .context("failed to reach GitHub releases API")?;
+
+            if !resp.status().is_success() {
+                bail!("GitHub API returned {}", resp.status());
+            }
+
+            let releases: Vec<serde_json::Value> = resp.json().await?;
+
+            let release = select_release(&releases, include_pre).cloned().context(
+                "no releases found — publish a release on GitHub first, or build from source",
+            )?;
+
+            let version = release["tag_name"]
+                .as_str()
+                .unwrap_or("unknown")
+                .trim_start_matches('v')
+                .to_string();
+            let download_url = find_asset_url(&release);
+            let is_newer = version_is_newer(&current, &version);
+            let is_prerelease = release["prerelease"].as_bool() == Some(true);
+
+            Ok(UpdateInfo {
+                current_version: current,
+                latest_version: version,
+                download_url,
+                is_newer,
+                is_prerelease,
+            })
+        }
     }
-
-    let release: serde_json::Value = resp.json().await?;
-    let tag = release["tag_name"]
-        .as_str()
-        .unwrap_or("unknown")
-        .trim_start_matches('v')
-        .to_string();
-
-    let download_url = find_asset_url(&release);
-    let is_newer = version_is_newer(&current, &tag);
-
-    Ok(UpdateInfo {
-        current_version: current,
-        latest_version: tag,
-        download_url,
-        is_newer,
-    })
 }
 
 /// Run the full 6-phase update pipeline.
 ///
 /// If `target_version` is `Some`, fetch that specific version instead of latest.
-pub async fn run(target_version: Option<&str>) -> Result<()> {
+/// If `include_pre` is true, pre-releases are considered when picking the latest.
+pub async fn run(target_version: Option<&str>, include_pre: bool) -> Result<()> {
     // Phase 1: Preflight
     info!("Phase 1/6: Preflight checks...");
-    let update_info = check(target_version).await?;
+    let update_info = check(target_version, include_pre).await?;
 
     if !update_info.is_newer {
         println!("Already up to date (v{}).", update_info.current_version);
         return Ok(());
     }
 
+    let pre_tag = if update_info.is_prerelease {
+        " (pre-release)"
+    } else {
+        ""
+    };
     println!(
-        "Update available: v{} -> v{}",
-        update_info.current_version, update_info.latest_version
+        "Update available: v{} -> v{}{}",
+        update_info.current_version, update_info.latest_version, pre_tag
     );
 
     let download_url = update_info
@@ -204,16 +243,36 @@ fn current_target_triple() -> &'static str {
     }
 }
 
+/// Pick the best release from a list (ordered newest-first).
+///
+/// If `include_pre` is true, returns the newest release regardless.
+/// Otherwise prefers the newest stable release, falling back to the
+/// newest pre-release when no stable release exists.
+fn select_release(releases: &[serde_json::Value], include_pre: bool) -> Option<&serde_json::Value> {
+    if include_pre {
+        releases.first()
+    } else {
+        let stable = releases
+            .iter()
+            .find(|r| r["prerelease"].as_bool() != Some(true));
+        stable.or_else(|| releases.first())
+    }
+}
+
 fn version_is_newer(current: &str, candidate: &str) -> bool {
-    let parse = |v: &str| -> Vec<u32> { v.split('.').filter_map(|p| p.parse().ok()).collect() };
-    let cur = parse(current);
-    let cand = parse(candidate);
-    cand > cur
+    match (
+        semver::Version::parse(current),
+        semver::Version::parse(candidate),
+    ) {
+        (Ok(cur), Ok(cand)) => cand > cur,
+        // Fall back to lexicographic if either fails to parse as semver
+        _ => candidate > current,
+    }
 }
 
 async fn download_binary(url: &str, dest: &Path) -> Result<()> {
     let client = reqwest::Client::builder()
-        .user_agent(format!("hrafn/{}", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("hrafn/{}", env!("HRAFN_VERSION")))
         .timeout(std::time::Duration::from_secs(300))
         .build()?;
 
@@ -434,6 +493,21 @@ mod tests {
     }
 
     #[test]
+    fn test_version_comparison_prerelease() {
+        // Per SemVer: prerelease < stable
+        assert!(version_is_newer("0.6.0-beta.1", "0.6.0"));
+        // Beta ordering
+        assert!(version_is_newer("0.6.0-beta.1", "0.6.0-beta.2"));
+        assert!(!version_is_newer("0.6.0-beta.2", "0.6.0-beta.1"));
+        // Same prerelease
+        assert!(!version_is_newer("0.6.0-beta.1", "0.6.0-beta.1"));
+        // Stable is not newer than same stable
+        assert!(!version_is_newer("0.6.0", "0.6.0"));
+        // Stable is newer than prerelease of same version
+        assert!(version_is_newer("0.5.0", "0.6.0-beta.1"));
+    }
+
+    #[test]
     fn current_target_triple_is_not_empty() {
         let triple = current_target_triple();
         assert_ne!(triple, "unknown", "unsupported platform");
@@ -593,6 +667,43 @@ mod tests {
 
         let content = std::fs::read(&dest).unwrap();
         assert_eq!(content, fake_binary);
+    }
+
+    #[test]
+    fn select_release_prefers_stable() {
+        let releases = vec![
+            serde_json::json!({"tag_name": "v0.2.0-beta.1", "prerelease": true}),
+            serde_json::json!({"tag_name": "v0.1.0", "prerelease": false}),
+        ];
+        let selected = select_release(&releases, false).unwrap();
+        assert_eq!(selected["tag_name"], "v0.1.0");
+    }
+
+    #[test]
+    fn select_release_falls_back_to_prerelease() {
+        let releases = vec![
+            serde_json::json!({"tag_name": "v0.2.0-beta.2", "prerelease": true}),
+            serde_json::json!({"tag_name": "v0.2.0-beta.1", "prerelease": true}),
+        ];
+        let selected = select_release(&releases, false).unwrap();
+        assert_eq!(selected["tag_name"], "v0.2.0-beta.2");
+    }
+
+    #[test]
+    fn select_release_pre_flag_picks_newest() {
+        let releases = vec![
+            serde_json::json!({"tag_name": "v0.2.0-beta.1", "prerelease": true}),
+            serde_json::json!({"tag_name": "v0.1.0", "prerelease": false}),
+        ];
+        let selected = select_release(&releases, true).unwrap();
+        assert_eq!(selected["tag_name"], "v0.2.0-beta.1");
+    }
+
+    #[test]
+    fn select_release_empty_returns_none() {
+        let releases: Vec<serde_json::Value> = vec![];
+        assert!(select_release(&releases, false).is_none());
+        assert!(select_release(&releases, true).is_none());
     }
 
     #[test]
