@@ -3807,6 +3807,7 @@ dependencies = [
  "rustls-pki-types",
  "schemars 1.2.1",
  "scopeguard",
+ "semver",
  "serde",
  "serde-big-array",
  "serde_json",

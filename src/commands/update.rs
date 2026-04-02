@@ -254,10 +254,14 @@ fn current_target_triple() -> &'static str {
 }
 
 fn version_is_newer(current: &str, candidate: &str) -> bool {
-    let parse = |v: &str| -> Vec<u32> { v.split('.').filter_map(|p| p.parse().ok()).collect() };
-    let cur = parse(current);
-    let cand = parse(candidate);
-    cand > cur
+    match (
+        semver::Version::parse(current),
+        semver::Version::parse(candidate),
+    ) {
+        (Ok(cur), Ok(cand)) => cand > cur,
+        // Fall back to lexicographic if either fails to parse as semver
+        _ => candidate > current,
+    }
 }
 
 async fn download_binary(url: &str, dest: &Path) -> Result<()> {
@@ -480,6 +484,21 @@ mod tests {
         assert!(!version_is_newer("0.5.0", "0.4.3"));
         assert!(!version_is_newer("0.4.3", "0.4.3"));
         assert!(version_is_newer("1.0.0", "2.0.0"));
+    }
+
+    #[test]
+    fn test_version_comparison_prerelease() {
+        // Per SemVer: prerelease < stable
+        assert!(version_is_newer("0.6.0-beta.1", "0.6.0"));
+        // Beta ordering
+        assert!(version_is_newer("0.6.0-beta.1", "0.6.0-beta.2"));
+        assert!(!version_is_newer("0.6.0-beta.2", "0.6.0-beta.1"));
+        // Same prerelease
+        assert!(!version_is_newer("0.6.0-beta.1", "0.6.0-beta.1"));
+        // Stable is not newer than same stable
+        assert!(!version_is_newer("0.6.0", "0.6.0"));
+        // Stable is newer than prerelease of same version
+        assert!(version_is_newer("0.5.0", "0.6.0-beta.1"));
     }
 
     #[test]
