@@ -1,13 +1,13 @@
-//! # A2A Protocol — MVP Implementation
+//! # A2A Protocol — v1.0 Implementation
 //!
-//! Implements a minimal subset of the A2A (Agent-to-Agent) protocol:
+//! Implements the A2A (Agent-to-Agent) protocol v1.0:
 //! - Agent Card discovery (`GET /.well-known/agent-card.json`)
-//! - `message/send` (synchronous request/response, no async queue)
-//! - `tasks/get` (polling only)
+//! - `message/send` (synchronous request/response)
+//! - `message/stream` (Server-Sent Events streaming)
+//! - `tasks/get` (polling)
 //! - Bearer token authentication
 //!
-//! **Not yet implemented (see issue #3566):**
-//! - `message/stream` (SSE)
+//! **Not yet implemented:**
 //! - `input-required` state / multi-turn conversations (`contextId`)
 //! - Push notifications
 //! - Structured/binary message parts (`data`, `raw`)
@@ -20,13 +20,18 @@ use axum::{
     Json,
     extract::State,
     http::{HeaderMap, StatusCode, header},
-    response::IntoResponse,
+    response::{
+        IntoResponse,
+        sse::{Event, KeepAlive, Sse},
+    },
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tokio_stream::StreamExt;
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -204,6 +209,36 @@ pub struct JsonRpcError {
     pub message: String,
 }
 
+// ── v1.0 Streaming types ────────────────────────────────────────
+
+/// A2A v1.0 `TaskStatusUpdateEvent` — emitted during streaming to report
+/// task state transitions.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskStatusUpdateEvent {
+    pub task_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<String>,
+    pub status: TaskStatus,
+    #[serde(rename = "final")]
+    pub is_final: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// A2A v1.0 `TaskArtifactUpdateEvent` — emitted during streaming to deliver
+/// artifact content (potentially chunked).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskArtifactUpdateEvent {
+    pub task_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<String>,
+    pub artifact: Artifact,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
 // ── Agent card generation ────────────────────────────────────────
 
 /// Generate the A2A agent card from configuration.
@@ -277,7 +312,7 @@ pub fn generate_agent_card(config: &crate::config::Config) -> serde_json::Value 
             "protocol_version": protocol_version
         }],
         "capabilities": {
-            "streaming": false,
+            "streaming": true,
             "pushNotifications": false
         },
         "defaultInputModes": ["text/plain"],
@@ -424,111 +459,12 @@ async fn handle_message_send(
     task_store: &Arc<TaskStore>,
     req: JsonRpcRequest,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    // Parse the inbound message: preserve the original v1 Message when present,
-    // only synthesize for the legacy simple-string fallback.
-    let (message_text, inbound_msg, context_id) = if let Some(msg_obj) = req
-        .params
-        .get("message")
-        .filter(|m| m.get("parts").and_then(|p| p.as_array()).is_some())
-    {
-        // v1.0 structured message — preserve original parts/metadata.
-        // Extract text for the agent pipeline (first text part).
-        let text = msg_obj
-            .pointer("/parts")
-            .and_then(|parts| parts.as_array())
-            .and_then(|parts| {
-                parts.iter().find_map(|p| {
-                    p.get("text")
-                        .and_then(|t| t.as_str())
-                        .map(String::from)
-                        .or_else(|| {
-                            // v0.3 compat: `kind` discriminator
-                            if p.get("kind").and_then(|t| t.as_str()) == Some("text") {
-                                p.get("text").and_then(|t| t.as_str()).map(String::from)
-                            } else {
-                                None
-                            }
-                        })
-                })
-            });
-        let Some(text) = text else {
-            return (
-                StatusCode::OK,
-                Json(rpc_error(
-                    req.id,
-                    -32602,
-                    "Invalid params: missing message text",
-                )),
-            );
-        };
-
-        let ctx_id = msg_obj
-            .get("contextId")
-            .and_then(|v| v.as_str())
-            .map(String::from)
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-
-        // Deserialize the full original Message, preserving all parts/metadata.
-        let inbound: Message = match serde_json::from_value::<Message>(msg_obj.clone()) {
-            Ok(mut msg) => {
-                // Ensure context_id is set
-                if msg.context_id.is_none() {
-                    msg.context_id = Some(ctx_id.clone());
-                }
-                msg
-            }
-            Err(_) => {
-                // Fallback: build from extracted fields if deserialization fails
-                Message {
-                    role: msg_obj
-                        .get("role")
-                        .and_then(|r| r.as_str())
-                        .unwrap_or("ROLE_USER")
-                        .to_string(),
-                    parts: vec![Part::Text {
-                        text: text.clone(),
-                        metadata: None,
-                    }],
-                    message_id: msg_obj
-                        .get("messageId")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    context_id: Some(ctx_id.clone()),
-                    metadata: msg_obj.get("metadata").cloned(),
-                }
-            }
-        };
-
-        (text, inbound, ctx_id)
-    } else if let Some(text) = req
-        .params
-        .get("message")
-        .and_then(|m| m.as_str())
-        .map(String::from)
-    {
-        // Legacy simple-string fallback — synthesize a Message.
-        let ctx_id = uuid::Uuid::new_v4().to_string();
-        let inbound = Message {
-            role: "ROLE_USER".to_string(),
-            parts: vec![Part::Text {
-                text: text.clone(),
-                metadata: None,
-            }],
-            message_id: uuid::Uuid::new_v4().to_string(),
-            context_id: Some(ctx_id.clone()),
-            metadata: None,
-        };
-        (text, inbound, ctx_id)
-    } else {
-        return (
-            StatusCode::OK,
-            Json(rpc_error(
-                req.id,
-                -32602,
-                "Invalid params: missing message text",
-            )),
-        );
+    // Parse the inbound message using shared helper.
+    let (message_text, inbound_msg, context_id) = match parse_inbound_message(&req.params) {
+        Ok(v) => v,
+        Err(msg) => {
+            return (StatusCode::OK, Json(rpc_error(req.id, -32602, msg)));
+        }
     };
 
     let task_id = uuid::Uuid::new_v4().to_string();
@@ -915,6 +851,487 @@ pub async fn handle_tasks_cancel_rest(
     unwrap_rpc_to_rest(status, body).into_response()
 }
 
+// ── v1.0 SSE streaming endpoint ──────────────────────────────────
+
+/// `POST /message:stream` — v1.0 REST binding for `SendStreamingMessage`.
+///
+/// Returns a Server-Sent Events stream that emits `TaskStatusUpdateEvent`
+/// and `TaskArtifactUpdateEvent` payloads as the agent processes the
+/// request.  The stream terminates after the task reaches a terminal state.
+pub async fn handle_message_stream_rest(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(params): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    // ── Feature gate ────────────────────────────────────────────
+    let (Some(_card), Some(task_store)) = (&state.a2a_agent_card, &state.a2a_task_store) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "A2A protocol not enabled"})),
+        )
+            .into_response();
+    };
+
+    // ── Auth ────────────────────────────────────────────────────
+    if let Err(resp) = require_a2a_auth(&state, &headers) {
+        return resp.into_response();
+    }
+
+    // ── Parse inbound message (reuse same logic as message/send) ─
+    let (message_text, inbound_msg, context_id) = match parse_inbound_message(&params) {
+        Ok(v) => v,
+        Err(msg) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": {"code": -32602, "message": msg}})),
+            )
+                .into_response();
+        }
+    };
+
+    let task_id = uuid::Uuid::new_v4().to_string();
+    let task_store = Arc::clone(task_store);
+
+    // ── Reserve a task slot ─────────────────────────────────────
+    {
+        let mut tasks = task_store.tasks.write().await;
+        if tasks.len() >= MAX_TASKS {
+            tasks.retain(|_, t| !t.status.state.is_terminal());
+            if tasks.len() >= MAX_TASKS {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({"error": {"code": -32000, "message": "Task store full"}})),
+                )
+                    .into_response();
+            }
+        }
+        tasks.insert(
+            task_id.clone(),
+            Task {
+                id: task_id.clone(),
+                status: TaskStatus {
+                    state: A2aTaskState::Submitted,
+                    message: None,
+                    timestamp: Some(chrono::Utc::now().to_rfc3339()),
+                },
+                context_id: Some(context_id.clone()),
+                artifacts: None,
+                history: Some(vec![inbound_msg]),
+                metadata: None,
+            },
+        );
+    }
+
+    // ── Spawn background task that owns the agent lifecycle ────
+    //
+    // The agent turn, task-store finalization, and Telegram notification
+    // run in a spawned task so that SSE client disconnects (which drop
+    // the response body / stream) cannot cancel finalization.  The SSE
+    // stream only reads from an mpsc channel fed by this background task.
+    let config = state.config.lock().clone();
+    let telegram_notify = config.a2a.notify_chat_id.and_then(|chat_id| {
+        config
+            .channels_config
+            .telegram
+            .as_ref()
+            .map(|t| (t.bot_token.clone(), chat_id))
+    });
+    let tid = task_id.clone();
+    let ctx = context_id.clone();
+
+    let (sse_tx, sse_rx) = tokio::sync::mpsc::channel::<Event>(64);
+
+    tokio::spawn({
+        let tid = tid.clone();
+        let ctx = ctx.clone();
+        let task_store = Arc::clone(&task_store);
+        let message_text = message_text.clone();
+
+        async move {
+            use crate::agent::TurnEvent;
+
+            // Helper: best-effort send (client may have disconnected)
+            macro_rules! emit {
+                ($event:expr) => {
+                    let _ = sse_tx.send($event).await;
+                };
+            }
+
+            // Emit initial status: working
+            let working_event = TaskStatusUpdateEvent {
+                task_id: tid.clone(),
+                context_id: Some(ctx.clone()),
+                status: TaskStatus {
+                    state: A2aTaskState::Working,
+                    message: None,
+                    timestamp: Some(chrono::Utc::now().to_rfc3339()),
+                },
+                is_final: false,
+                metadata: None,
+            };
+            emit!(
+                Event::default()
+                    .event("status_update")
+                    .data(serde_json::to_string(&working_event).unwrap_or_default())
+            );
+
+            // Update task store to working
+            {
+                let mut tasks = task_store.tasks.write().await;
+                if let Some(t) = tasks.get_mut(&tid) {
+                    t.status.state = A2aTaskState::Working;
+                    t.status.timestamp = Some(chrono::Utc::now().to_rfc3339());
+                }
+            }
+
+            // Create agent for streaming
+            let mut agent = match crate::agent::Agent::from_config(&config).await {
+                Ok(a) => a,
+                Err(e) => {
+                    tracing::error!(task_id = %tid, error = %e, "Agent init failed for SSE");
+                    let fail_status = TaskStatus {
+                        state: A2aTaskState::Failed,
+                        message: Some(Message {
+                            role: "ROLE_AGENT".to_string(),
+                            parts: vec![Part::Text {
+                                text: "Internal processing error".to_string(),
+                                metadata: None,
+                            }],
+                            message_id: uuid::Uuid::new_v4().to_string(),
+                            context_id: Some(ctx.clone()),
+                            metadata: None,
+                        }),
+                        timestamp: Some(chrono::Utc::now().to_rfc3339()),
+                    };
+                    let fail_event = TaskStatusUpdateEvent {
+                        task_id: tid.clone(),
+                        context_id: Some(ctx.clone()),
+                        status: fail_status.clone(),
+                        is_final: true,
+                        metadata: None,
+                    };
+                    emit!(
+                        Event::default()
+                            .event("status_update")
+                            .data(serde_json::to_string(&fail_event).unwrap_or_default())
+                    );
+
+                    // Update task store — always runs even if client disconnected
+                    let mut tasks = task_store.tasks.write().await;
+                    if let Some(t) = tasks.get_mut(&tid) {
+                        t.status = fail_status;
+                    }
+                    return;
+                }
+            };
+
+            // Stream the agent turn
+            let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<TurnEvent>(64);
+            let msg_owned = message_text.clone();
+
+            // Accumulate text chunks for the final artifact
+            let accumulated_text = Arc::new(RwLock::new(String::new()));
+            let acc_clone = Arc::clone(&accumulated_text);
+
+            let turn_handle =
+                tokio::spawn(async move { agent.turn_streamed(&msg_owned, event_tx).await });
+
+            let artifact_id = uuid::Uuid::new_v4().to_string();
+            let mut chunk_index: u32 = 0;
+
+            while let Some(event) = event_rx.recv().await {
+                match event {
+                    TurnEvent::Chunk { delta } => {
+                        acc_clone.write().await.push_str(&delta);
+                        chunk_index += 1;
+
+                        let artifact_event = TaskArtifactUpdateEvent {
+                            task_id: tid.clone(),
+                            context_id: Some(ctx.clone()),
+                            artifact: Artifact {
+                                artifact_id: artifact_id.clone(),
+                                name: Some("response".to_string()),
+                                description: None,
+                                parts: vec![Part::Text {
+                                    text: delta,
+                                    metadata: None,
+                                }],
+                                metadata: Some(json!({
+                                    "append": true,
+                                    "chunkIndex": chunk_index,
+                                })),
+                                extensions: None,
+                            },
+                            metadata: None,
+                        };
+                        emit!(
+                            Event::default()
+                                .event("artifact_update")
+                                .data(serde_json::to_string(&artifact_event).unwrap_or_default())
+                        );
+                    }
+                    TurnEvent::Thinking { delta } => {
+                        let ev = TaskStatusUpdateEvent {
+                            task_id: tid.clone(),
+                            context_id: Some(ctx.clone()),
+                            status: TaskStatus {
+                                state: A2aTaskState::Working,
+                                message: None,
+                                timestamp: Some(chrono::Utc::now().to_rfc3339()),
+                            },
+                            is_final: false,
+                            metadata: Some(json!({"thinking": delta})),
+                        };
+                        emit!(
+                            Event::default()
+                                .event("status_update")
+                                .data(serde_json::to_string(&ev).unwrap_or_default())
+                        );
+                    }
+                    TurnEvent::ToolCall { name, args } => {
+                        let ev = TaskStatusUpdateEvent {
+                            task_id: tid.clone(),
+                            context_id: Some(ctx.clone()),
+                            status: TaskStatus {
+                                state: A2aTaskState::Working,
+                                message: None,
+                                timestamp: Some(chrono::Utc::now().to_rfc3339()),
+                            },
+                            is_final: false,
+                            metadata: Some(json!({"toolCall": {"name": name, "args": args}})),
+                        };
+                        emit!(
+                            Event::default()
+                                .event("status_update")
+                                .data(serde_json::to_string(&ev).unwrap_or_default())
+                        );
+                    }
+                    TurnEvent::ToolResult { name, output } => {
+                        let ev = TaskStatusUpdateEvent {
+                            task_id: tid.clone(),
+                            context_id: Some(ctx.clone()),
+                            status: TaskStatus {
+                                state: A2aTaskState::Working,
+                                message: None,
+                                timestamp: Some(chrono::Utc::now().to_rfc3339()),
+                            },
+                            is_final: false,
+                            metadata: Some(json!({"toolResult": {"name": name, "output": output}})),
+                        };
+                        emit!(
+                            Event::default()
+                                .event("status_update")
+                                .data(serde_json::to_string(&ev).unwrap_or_default())
+                        );
+                    }
+                }
+            }
+
+            // Agent turn completed — determine final status
+            let turn_result = turn_handle.await.map_err(|e| {
+                tracing::error!(task_id = %tid, error = %e, "Agent turn task panicked");
+                e
+            });
+
+            let full_text = accumulated_text.read().await.clone();
+
+            let (final_state, final_message, final_artifact) = match turn_result {
+                Ok(Ok(response)) => {
+                    let text = if full_text.is_empty() {
+                        response
+                    } else {
+                        full_text
+                    };
+                    (
+                        A2aTaskState::Completed,
+                        Message {
+                            role: "ROLE_AGENT".to_string(),
+                            parts: vec![Part::Text {
+                                text: text.clone(),
+                                metadata: None,
+                            }],
+                            message_id: uuid::Uuid::new_v4().to_string(),
+                            context_id: Some(ctx.clone()),
+                            metadata: None,
+                        },
+                        Some(Artifact {
+                            artifact_id: artifact_id.clone(),
+                            name: Some("response".to_string()),
+                            description: None,
+                            parts: vec![Part::Text {
+                                text,
+                                metadata: None,
+                            }],
+                            metadata: None,
+                            extensions: None,
+                        }),
+                    )
+                }
+                _ => (
+                    A2aTaskState::Failed,
+                    Message {
+                        role: "ROLE_AGENT".to_string(),
+                        parts: vec![Part::Text {
+                            text: "Internal processing error".to_string(),
+                            metadata: None,
+                        }],
+                        message_id: uuid::Uuid::new_v4().to_string(),
+                        context_id: Some(ctx.clone()),
+                        metadata: None,
+                    },
+                    None,
+                ),
+            };
+
+            // Notify Telegram on success
+            if final_state == A2aTaskState::Completed {
+                if let Some((ref token, chat_id)) = telegram_notify {
+                    let response_text = final_message
+                        .parts
+                        .first()
+                        .and_then(|p| match p {
+                            Part::Text { text, .. } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .unwrap_or("");
+                    let notice = format!(
+                        "\u{1f4e8} *A2A stream received:* _{}_\n\n{}",
+                        message_text.replace('*', "\\*").replace('_', "\\_"),
+                        response_text
+                    );
+                    notify_telegram_chat(token, chat_id, &notice).await;
+                }
+            }
+
+            // Finalize task store — always runs even if SSE client disconnected
+            {
+                let mut tasks = task_store.tasks.write().await;
+                if let Some(t) = tasks.get_mut(&tid) {
+                    t.status = TaskStatus {
+                        state: final_state.clone(),
+                        message: Some(final_message.clone()),
+                        timestamp: Some(chrono::Utc::now().to_rfc3339()),
+                    };
+                    t.artifacts = final_artifact.as_ref().map(|a| vec![a.clone()]);
+                }
+            }
+
+            // Emit final status_update (best-effort — client may be gone)
+            let final_event = TaskStatusUpdateEvent {
+                task_id: tid.clone(),
+                context_id: Some(ctx.clone()),
+                status: TaskStatus {
+                    state: final_state,
+                    message: Some(final_message),
+                    timestamp: Some(chrono::Utc::now().to_rfc3339()),
+                },
+                is_final: true,
+                metadata: None,
+            };
+            let _ = sse_tx
+                .send(
+                    Event::default()
+                        .event("status_update")
+                        .data(serde_json::to_string(&final_event).unwrap_or_default()),
+                )
+                .await;
+        }
+    });
+
+    // ── SSE stream reads from channel — disconnect-safe ─────────
+    let stream =
+        tokio_stream::wrappers::ReceiverStream::new(sse_rx).map(Ok::<_, Infallible>);
+
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
+/// Parse inbound A2A message params, returning (text, Message, context_id).
+fn parse_inbound_message(
+    params: &serde_json::Value,
+) -> Result<(String, Message, String), &'static str> {
+    if let Some(msg_obj) = params
+        .get("message")
+        .filter(|m| m.get("parts").and_then(|p| p.as_array()).is_some())
+    {
+        let text = msg_obj
+            .pointer("/parts")
+            .and_then(|parts| parts.as_array())
+            .and_then(|parts| {
+                parts.iter().find_map(|p| {
+                    p.get("text")
+                        .and_then(|t| t.as_str())
+                        .map(String::from)
+                        .or_else(|| {
+                            if p.get("kind").and_then(|t| t.as_str()) == Some("text") {
+                                p.get("text").and_then(|t| t.as_str()).map(String::from)
+                            } else {
+                                None
+                            }
+                        })
+                })
+            });
+        let Some(text) = text else {
+            return Err("Invalid params: missing message text");
+        };
+
+        let ctx_id = msg_obj
+            .get("contextId")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+        let inbound: Message = match serde_json::from_value::<Message>(msg_obj.clone()) {
+            Ok(mut msg) => {
+                if msg.context_id.is_none() {
+                    msg.context_id = Some(ctx_id.clone());
+                }
+                msg
+            }
+            Err(_) => Message {
+                role: msg_obj
+                    .get("role")
+                    .and_then(|r| r.as_str())
+                    .unwrap_or("ROLE_USER")
+                    .to_string(),
+                parts: vec![Part::Text {
+                    text: text.clone(),
+                    metadata: None,
+                }],
+                message_id: msg_obj
+                    .get("messageId")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                context_id: Some(ctx_id.clone()),
+                metadata: msg_obj.get("metadata").cloned(),
+            },
+        };
+
+        Ok((text, inbound, ctx_id))
+    } else if let Some(text) = params
+        .get("message")
+        .and_then(|m| m.as_str())
+        .map(String::from)
+    {
+        let ctx_id = uuid::Uuid::new_v4().to_string();
+        let inbound = Message {
+            role: "ROLE_USER".to_string(),
+            parts: vec![Part::Text {
+                text: text.clone(),
+                metadata: None,
+            }],
+            message_id: uuid::Uuid::new_v4().to_string(),
+            context_id: Some(ctx_id.clone()),
+            metadata: None,
+        };
+        Ok((text, inbound, ctx_id))
+    } else {
+        Err("Invalid params: missing message text")
+    }
+}
+
 // ── Helpers ──────────────────────────────────────────────────────
 
 /// Best-effort Telegram notification for A2A activity.
@@ -1116,7 +1533,7 @@ mod tests {
         assert_eq!(ifaces[0]["protocol_binding"], "JSONRPC");
         assert_eq!(ifaces[0]["protocol_version"], "1.0");
         assert!(card["capabilities"].is_object());
-        assert_eq!(card["capabilities"]["streaming"], false);
+        assert_eq!(card["capabilities"]["streaming"], true);
         // v1.0: security_schemes replaces authentication
         assert!(card["security_schemes"]["bearer"].is_object());
         assert!(card["security_requirements"].is_array());
@@ -1861,5 +2278,86 @@ mod tests {
         let body = response_json(resp).await;
         // Should get a result (not an error), proving eviction worked
         assert!(body["result"]["id"].is_string());
+    }
+
+    // ── Streaming type tests ─────────────────────────────────────
+
+    #[test]
+    fn parse_inbound_message_v1_structured() {
+        let params = json!({
+            "message": {
+                "role": "ROLE_USER",
+                "parts": [{"text": "hello"}],
+                "messageId": "msg-1",
+                "contextId": "ctx-1"
+            }
+        });
+        let (text, msg, ctx) = parse_inbound_message(&params).unwrap();
+        assert_eq!(text, "hello");
+        assert_eq!(msg.role, "ROLE_USER");
+        assert_eq!(ctx, "ctx-1");
+    }
+
+    #[test]
+    fn parse_inbound_message_simple_string() {
+        let params = json!({"message": "plain text"});
+        let (text, msg, _ctx) = parse_inbound_message(&params).unwrap();
+        assert_eq!(text, "plain text");
+        assert_eq!(msg.role, "ROLE_USER");
+        assert_eq!(msg.parts.len(), 1);
+    }
+
+    #[test]
+    fn parse_inbound_message_missing_text() {
+        let params = json!({"message": {"parts": [{"data": {}}]}});
+        assert!(parse_inbound_message(&params).is_err());
+    }
+
+    #[test]
+    fn parse_inbound_message_missing_message() {
+        let params = json!({});
+        assert!(parse_inbound_message(&params).is_err());
+    }
+
+    #[test]
+    fn streaming_event_serialization() {
+        let status_event = TaskStatusUpdateEvent {
+            task_id: "t-1".into(),
+            context_id: Some("ctx-1".into()),
+            status: TaskStatus {
+                state: A2aTaskState::Working,
+                message: None,
+                timestamp: Some("2026-01-01T00:00:00Z".into()),
+            },
+            is_final: false,
+            metadata: None,
+        };
+        let json = serde_json::to_value(&status_event).unwrap();
+        assert_eq!(json["taskId"], "t-1");
+        assert_eq!(json["contextId"], "ctx-1");
+        assert_eq!(json["status"]["state"], "TASK_STATE_WORKING");
+        assert_eq!(json["final"], false);
+
+        let artifact_event = TaskArtifactUpdateEvent {
+            task_id: "t-1".into(),
+            context_id: Some("ctx-1".into()),
+            artifact: Artifact {
+                artifact_id: "a-1".into(),
+                name: Some("response".into()),
+                description: None,
+                parts: vec![Part::Text {
+                    text: "chunk".into(),
+                    metadata: None,
+                }],
+                metadata: Some(json!({"append": true, "chunkIndex": 1})),
+                extensions: None,
+            },
+            metadata: None,
+        };
+        let json = serde_json::to_value(&artifact_event).unwrap();
+        assert_eq!(json["taskId"], "t-1");
+        assert_eq!(json["artifact"]["artifactId"], "a-1");
+        assert_eq!(json["artifact"]["parts"][0]["text"], "chunk");
+        assert!(json["artifact"]["metadata"]["append"].as_bool().unwrap());
     }
 }
