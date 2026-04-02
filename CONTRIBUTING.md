@@ -268,7 +268,7 @@ The OC Bridge lets Hrafn users test OpenClaw plugins via MCP without a native Ru
 
 ### Testing an OC Bridge plugin
 
-See `docs/oc-bridge.md` for setup instructions.
+*OC Bridge is planned for a future release (M3).*
 
 ### Porting a plugin to native Rust
 
