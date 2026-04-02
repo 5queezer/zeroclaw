@@ -203,10 +203,36 @@ pub struct JsonRpcResponse {
     pub error: Option<JsonRpcError>,
 }
 
+/// google.rpc.ErrorInfo detail — included in the `details` array
+/// of JSON-RPC errors per A2A v1.0 error model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct A2aErrorDetail {
+    #[serde(rename = "@type")]
+    pub error_type: String,
+    pub reason: String,
+    pub domain: String,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub metadata: HashMap<String, String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct JsonRpcError {
     pub code: i32,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Vec<A2aErrorDetail>>,
+}
+
+/// A2A v1.0 error reason codes (used in `A2aErrorDetail.reason`).
+pub mod error_reason {
+    pub const INVALID_REQUEST: &str = "INVALID_REQUEST";
+    pub const METHOD_NOT_FOUND: &str = "METHOD_NOT_FOUND";
+    pub const INVALID_PARAMS: &str = "INVALID_PARAMS";
+    pub const UNAUTHORIZED: &str = "UNAUTHORIZED";
+    pub const TASK_NOT_FOUND: &str = "TASK_NOT_FOUND";
+    pub const TASK_ALREADY_TERMINAL: &str = "TASK_ALREADY_TERMINAL";
+    pub const TASK_STORE_FULL: &str = "TASK_STORE_FULL";
+    pub const INTERNAL_ERROR: &str = "INTERNAL_ERROR";
 }
 
 // ── v1.0 Streaming types ────────────────────────────────────────
@@ -380,7 +406,12 @@ pub async fn handle_a2a_rpc(
     if body.jsonrpc != "2.0" {
         return (
             StatusCode::BAD_REQUEST,
-            Json(rpc_error(body.id, -32600, "Invalid JSON-RPC version")),
+            Json(rpc_error(
+                body.id,
+                -32600,
+                "Invalid JSON-RPC version",
+                Some(error_reason::INVALID_REQUEST),
+            )),
         )
             .into_response();
     }
@@ -397,6 +428,7 @@ pub async fn handle_a2a_rpc(
                 body.id,
                 -32601,
                 &format!("Method not found: {}", body.method),
+                Some(error_reason::METHOD_NOT_FOUND),
             )),
         )
             .into_response(),
@@ -426,9 +458,12 @@ fn require_a2a_auth(
                 } else {
                     Err((
                         StatusCode::UNAUTHORIZED,
-                        Json(
-                            json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32000, "message": "Unauthorized"}}),
-                        ),
+                        Json(rpc_error(
+                            json!(null),
+                            -32000,
+                            "Unauthorized",
+                            Some(error_reason::UNAUTHORIZED),
+                        )),
                     ))
                 };
             }
@@ -445,9 +480,12 @@ fn require_a2a_auth(
     } else {
         Err((
             StatusCode::UNAUTHORIZED,
-            Json(
-                json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32000, "message": "Unauthorized"}}),
-            ),
+            Json(rpc_error(
+                json!(null),
+                -32000,
+                "Unauthorized",
+                Some(error_reason::UNAUTHORIZED),
+            )),
         ))
     }
 }
@@ -463,7 +501,15 @@ async fn handle_message_send(
     let (message_text, inbound_msg, context_id) = match parse_inbound_message(&req.params) {
         Ok(v) => v,
         Err(msg) => {
-            return (StatusCode::OK, Json(rpc_error(req.id, -32602, msg)));
+            return (
+                StatusCode::OK,
+                Json(rpc_error(
+                    req.id,
+                    -32602,
+                    msg,
+                    Some(error_reason::INVALID_PARAMS),
+                )),
+            );
         }
     };
 
@@ -482,6 +528,7 @@ async fn handle_message_send(
                         req.id,
                         -32000,
                         "Task store full — too many in-flight tasks",
+                        Some(error_reason::TASK_STORE_FULL),
                     )),
                 );
             }
@@ -654,7 +701,12 @@ async fn handle_tasks_get(
     if task_id.is_empty() {
         return (
             StatusCode::OK,
-            Json(rpc_error(req.id, -32602, "Invalid params: missing task id")),
+            Json(rpc_error(
+                req.id,
+                -32602,
+                "Invalid params: missing task id",
+                Some(error_reason::INVALID_PARAMS),
+            )),
         );
     }
 
@@ -670,7 +722,12 @@ async fn handle_tasks_get(
         ),
         None => (
             StatusCode::OK,
-            Json(rpc_error(req.id, -32001, "Task not found")),
+            Json(rpc_error(
+                req.id,
+                -32001,
+                "Task not found",
+                Some(error_reason::TASK_NOT_FOUND),
+            )),
         ),
     }
 }
@@ -684,7 +741,12 @@ async fn handle_tasks_cancel(
     if task_id.is_empty() {
         return (
             StatusCode::OK,
-            Json(rpc_error(req.id, -32602, "Invalid params: missing task id")),
+            Json(rpc_error(
+                req.id,
+                -32602,
+                "Invalid params: missing task id",
+                Some(error_reason::INVALID_PARAMS),
+            )),
         );
     }
 
@@ -698,6 +760,7 @@ async fn handle_tasks_cancel(
                         req.id,
                         -32002,
                         "Task is already in a terminal state",
+                        Some(error_reason::TASK_ALREADY_TERMINAL),
                     )),
                 );
             }
@@ -715,7 +778,12 @@ async fn handle_tasks_cancel(
         }
         None => (
             StatusCode::OK,
-            Json(rpc_error(req.id, -32001, "Task not found")),
+            Json(rpc_error(
+                req.id,
+                -32001,
+                "Task not found",
+                Some(error_reason::TASK_NOT_FOUND),
+            )),
         ),
     }
 }
@@ -750,15 +818,14 @@ fn unwrap_rpc_to_rest(
             -32002 => StatusCode::CONFLICT,         // Task already terminal
             _ => StatusCode::INTERNAL_SERVER_ERROR, // Server errors
         };
-        return (
-            http_status,
-            Json(json!({
-                "error": {
-                    "code": code,
-                    "message": error.get("message").cloned().unwrap_or(json!("Unknown error"))
-                }
-            })),
-        );
+        let mut rest_error = json!({
+            "code": code,
+            "message": error.get("message").cloned().unwrap_or(json!("Unknown error"))
+        });
+        if let Some(details) = error.get("details") {
+            rest_error["details"] = details.clone();
+        }
+        return (http_status, Json(json!({ "error": rest_error })));
     }
 
     (
@@ -1239,8 +1306,7 @@ pub async fn handle_message_stream_rest(
     });
 
     // ── SSE stream reads from channel — disconnect-safe ─────────
-    let stream =
-        tokio_stream::wrappers::ReceiverStream::new(sse_rx).map(Ok::<_, Infallible>);
+    let stream = tokio_stream::wrappers::ReceiverStream::new(sse_rx).map(Ok::<_, Infallible>);
 
     Sse::new(stream)
         .keep_alive(KeepAlive::default())
@@ -1356,14 +1422,28 @@ async fn notify_telegram_chat(bot_token: &str, chat_id: i64, text: &str) {
         .await;
 }
 
-fn rpc_error(id: serde_json::Value, code: i32, message: &str) -> serde_json::Value {
+fn rpc_error(
+    id: serde_json::Value,
+    code: i32,
+    message: &str,
+    reason: Option<&str>,
+) -> serde_json::Value {
+    let mut error = json!({
+        "code": code,
+        "message": message
+    });
+    if let Some(reason) = reason {
+        error["details"] = json!([{
+            "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+            "reason": reason,
+            "domain": "a2a-protocol.org",
+            "metadata": {}
+        }]);
+    }
     json!({
         "jsonrpc": "2.0",
         "id": id,
-        "error": {
-            "code": code,
-            "message": message
-        }
+        "error": error
     })
 }
 
@@ -1581,11 +1661,76 @@ mod tests {
 
     #[test]
     fn rpc_error_format() {
-        let err = rpc_error(json!(1), -32600, "Test error");
+        let err = rpc_error(json!(1), -32600, "Test error", Some("INVALID_REQUEST"));
         assert_eq!(err["jsonrpc"], "2.0");
         assert_eq!(err["id"], 1);
         assert_eq!(err["error"]["code"], -32600);
         assert_eq!(err["error"]["message"], "Test error");
+        // v1.0: details array is present when reason is provided
+        let details = err["error"]["details"].as_array().unwrap();
+        assert_eq!(details.len(), 1);
+        assert_eq!(details[0]["reason"], "INVALID_REQUEST");
+    }
+
+    #[test]
+    fn rpc_error_without_reason_has_no_details() {
+        let err = rpc_error(json!(1), -32600, "Test error", None);
+        assert_eq!(err["error"]["code"], -32600);
+        assert!(err["error"]["details"].is_null());
+    }
+
+    #[test]
+    fn error_includes_a2a_domain() {
+        let err = rpc_error(
+            json!(1),
+            -32001,
+            "Task not found",
+            Some(error_reason::TASK_NOT_FOUND),
+        );
+        let details = err["error"]["details"].as_array().unwrap();
+        assert_eq!(details[0]["domain"], "a2a-protocol.org");
+    }
+
+    #[test]
+    fn error_includes_error_info_type() {
+        let err = rpc_error(
+            json!(1),
+            -32602,
+            "Invalid params",
+            Some(error_reason::INVALID_PARAMS),
+        );
+        let details = err["error"]["details"].as_array().unwrap();
+        assert_eq!(
+            details[0]["@type"],
+            "type.googleapis.com/google.rpc.ErrorInfo"
+        );
+    }
+
+    #[test]
+    fn error_reason_codes_match_expected() {
+        let cases: Vec<(i32, &str, &str)> = vec![
+            (-32600, "Invalid request", error_reason::INVALID_REQUEST),
+            (-32601, "Method not found", error_reason::METHOD_NOT_FOUND),
+            (-32602, "Invalid params", error_reason::INVALID_PARAMS),
+            (-32000, "Unauthorized", error_reason::UNAUTHORIZED),
+            (-32001, "Task not found", error_reason::TASK_NOT_FOUND),
+            (-32002, "Task terminal", error_reason::TASK_ALREADY_TERMINAL),
+            (-32000, "Store full", error_reason::TASK_STORE_FULL),
+            (-32000, "Internal", error_reason::INTERNAL_ERROR),
+        ];
+        for (code, msg, reason) in cases {
+            let err = rpc_error(json!(1), code, msg, Some(reason));
+            let details = err["error"]["details"].as_array().unwrap();
+            assert_eq!(details[0]["reason"], reason, "reason mismatch for {msg}");
+            assert_eq!(
+                details[0]["domain"], "a2a-protocol.org",
+                "domain mismatch for {msg}"
+            );
+            assert_eq!(
+                details[0]["@type"], "type.googleapis.com/google.rpc.ErrorInfo",
+                "@type mismatch for {msg}"
+            );
+        }
     }
 
     #[tokio::test]
