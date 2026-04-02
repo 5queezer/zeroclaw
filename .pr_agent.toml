@@ -1,0 +1,38 @@
+[config]
+model = "openrouter/qwen/qwen3-coder:free"
+fallback_models = ["openrouter/qwen/qwen3.6-plus-preview:free"]
+custom_model_max_tokens = 4000
+
+[pr_reviewer]
+extra_instructions = """\
+This is a Rust autonomous agent runtime (edition 2024, MSRV 1.87). \
+Review with these priorities:\n\
+1. Security — flag any weakening of access control, policy, or secret handling (src/security/**, src/gateway/**, src/tools/**)\n\
+2. Correctness — proper error handling with Result, no unwrap() in non-test code, memory safety\n\
+3. Rust idioms — borrowing over cloning, proper lifetime usage, idiomatic pattern matching\n\
+4. Scope — reject unrelated changes, speculative abstractions, or feature flags without concrete use\n\
+Skip style nits already caught by rustfmt and clippy.\
+"""
+enable_review_labels_effort = true
+require_tests_review = true
+require_security_review = true
+require_can_be_split_review = true
+num_code_suggestions = 4
+persistent_comment = true
+
+[pr_description]
+extra_instructions = "Use conventional commit style. Mention affected modules (e.g. security, config, channels)."
+publish_labels = true
+publish_description_as_comment = false
+
+[pr_code_suggestions]
+extra_instructions = "Prefer idiomatic Rust: use ? operator, avoid unnecessary allocations, prefer &str over String where possible."
+num_code_suggestions = 3
+
+[github_app]
+override_deployment_type = true
+pr_commands = [
+    "/review",
+    "/describe",
+    "/improve",
+]
