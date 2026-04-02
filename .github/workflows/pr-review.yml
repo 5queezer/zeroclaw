@@ -21,7 +21,7 @@ jobs:
       - uses: qodo-ai/pr-agent@v0.33
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OPENROUTER__KEY: ${{ secrets.OPENROUTER_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           config.model: "openrouter/qwen/qwen3-coder:free"
           config.fallback_models: '["openrouter/qwen/qwen3.6-plus-preview:free"]'
           config.custom_model_max_tokens: "4000"
