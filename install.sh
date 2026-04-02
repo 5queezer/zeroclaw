@@ -229,18 +229,20 @@ detect_release_target() {
   os="$(uname -s)"
   arch="$(uname -m)"
 
-  if is_musl_linux; then
-    return 1
-  fi
-
   case "$os:$arch" in
     Linux:x86_64)
-      echo "x86_64-unknown-linux-gnu"
+      if is_musl_linux; then
+        echo "x86_64-unknown-linux-musl"
+      else
+        echo "x86_64-unknown-linux-gnu"
+      fi
       ;;
     Linux:aarch64|Linux:arm64)
       # Termux on Android needs the android target, not linux-gnu
       if [[ -n "${TERMUX_VERSION:-}" || -d "/data/data/com.termux" ]]; then
         echo "aarch64-linux-android"
+      elif is_musl_linux; then
+        echo "aarch64-unknown-linux-musl"
       else
         echo "aarch64-unknown-linux-gnu"
       fi
@@ -377,12 +379,6 @@ install_prebuilt_binary() {
   fi
   if ! have_cmd tar; then
     warn "tar is required for pre-built binary installation."
-    return 1
-  fi
-
-  if is_musl_linux; then
-    warn "Pre-built release binaries are not published for musl/Alpine yet."
-    warn "Falling back to source build."
     return 1
   fi
 

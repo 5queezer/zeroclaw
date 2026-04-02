@@ -190,10 +190,14 @@ fn current_target_triple() -> &'static str {
             } else {
                 "aarch64-unknown-linux-gnu"
             }
-        } else if cfg!(target_env = "musl") {
+        } else if cfg!(all(target_arch = "x86_64", target_env = "musl")) {
             "x86_64-unknown-linux-musl"
-        } else {
+        } else if cfg!(target_arch = "x86_64") {
             "x86_64-unknown-linux-gnu"
+        } else if cfg!(target_arch = "arm") {
+            "armv7-unknown-linux-gnueabihf"
+        } else {
+            "unknown"
         }
     } else {
         "unknown"
