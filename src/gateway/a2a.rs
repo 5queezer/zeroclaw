@@ -1239,8 +1239,7 @@ pub async fn handle_message_stream_rest(
     });
 
     // ── SSE stream reads from channel — disconnect-safe ─────────
-    let stream =
-        tokio_stream::wrappers::ReceiverStream::new(sse_rx).map(Ok::<_, Infallible>);
+    let stream = tokio_stream::wrappers::ReceiverStream::new(sse_rx).map(Ok::<_, Infallible>);
 
     Sse::new(stream)
         .keep_alive(KeepAlive::default())
