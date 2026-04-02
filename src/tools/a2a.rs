@@ -236,6 +236,62 @@ impl A2aTool {
             }),
         }
     }
+    async fn action_list(
+        &self,
+        url: &str,
+        bearer_token: Option<&str>,
+        page_size: Option<u64>,
+        page_token: Option<&str>,
+        context_id: Option<&str>,
+        status: Option<&str>,
+    ) -> anyhow::Result<ToolResult> {
+        let mut list_url = self.validate_url(url)?;
+        list_url
+            .path_segments_mut()
+            .map_err(|()| anyhow::anyhow!("URL cannot be a base"))?
+            .push("tasks");
+
+        {
+            let mut query = list_url.query_pairs_mut();
+            if let Some(ps) = page_size {
+                query.append_pair("page_size", &ps.to_string());
+            }
+            if let Some(pt) = page_token {
+                query.append_pair("page_token", pt);
+            }
+            if let Some(ctx) = context_id {
+                query.append_pair("context_id", ctx);
+            }
+            if let Some(s) = status {
+                query.append_pair("status", s);
+            }
+        }
+
+        let client = self.build_client()?;
+        let mut req = client.get(list_url);
+        if let Some(token) = bearer_token {
+            req = req.bearer_auth(token);
+        }
+
+        let resp = req.send().await?;
+        let resp_status = resp.status();
+        let resp_body = resp.text().await?;
+
+        if resp_status.is_success() {
+            Ok(ToolResult {
+                success: true,
+                output: resp_body,
+                error: None,
+            })
+        } else {
+            Ok(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some(format!("HTTP {resp_status}: {resp_body}")),
+            })
+        }
+    }
+
     async fn action_cancel(
         &self,
         url: &str,
@@ -283,9 +339,10 @@ impl Tool for A2aTool {
 
     fn description(&self) -> &str {
         "Communicate with remote agents via the A2A (Agent-to-Agent) protocol. \
-         Supports five actions: 'discover' to fetch a remote agent's capability card, \
+         Supports six actions: 'discover' to fetch a remote agent's capability card, \
          'send' to dispatch a task message, 'status' to check task progress, \
-         'result' to retrieve task output artifacts, and 'cancel' to cancel a running task."
+         'result' to retrieve task output artifacts, 'cancel' to cancel a running task, \
+         and 'list' to list tasks with optional filtering and pagination."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -294,7 +351,7 @@ impl Tool for A2aTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["discover", "send", "status", "result", "cancel"],
+                    "enum": ["discover", "send", "status", "result", "cancel", "list"],
                     "description": "A2A operation to perform"
                 },
                 "url": {
@@ -312,6 +369,22 @@ impl Tool for A2aTool {
                 "message": {
                     "type": "string",
                     "description": "Message to send to the remote agent (required for send action)"
+                },
+                "page_size": {
+                    "type": "integer",
+                    "description": "Number of tasks per page (1-100, default 50; for list action)"
+                },
+                "page_token": {
+                    "type": "string",
+                    "description": "Cursor token for next page (for list action)"
+                },
+                "context_id": {
+                    "type": "string",
+                    "description": "Filter tasks by context ID (for list action)"
+                },
+                "status": {
+                    "type": "string",
+                    "description": "Filter tasks by status, e.g. TASK_STATE_COMPLETED (for list action)"
                 }
             },
             "required": ["action", "url"]
@@ -414,11 +487,26 @@ impl Tool for A2aTool {
                 self.action_cancel(&url, bearer_token.as_deref(), &task_id)
                     .await
             }
+            "list" => {
+                let page_size = args.get("page_size").and_then(|v| v.as_u64());
+                let page_token = args.get("page_token").and_then(|v| v.as_str());
+                let context_id = args.get("context_id").and_then(|v| v.as_str());
+                let status = args.get("status").and_then(|v| v.as_str());
+                self.action_list(
+                    &url,
+                    bearer_token.as_deref(),
+                    page_size,
+                    page_token,
+                    context_id,
+                    status,
+                )
+                .await
+            }
             other => Ok(ToolResult {
                 success: false,
                 output: String::new(),
                 error: Some(format!(
-                    "Unknown action: '{other}'. Valid actions: discover, send, status, result, cancel"
+                    "Unknown action: '{other}'. Valid actions: discover, send, status, result, cancel, list"
                 )),
             }),
         }
@@ -652,6 +740,23 @@ mod tests {
             action_strs.contains(&"cancel"),
             "schema must include cancel action"
         );
+    }
+
+    #[test]
+    fn list_action_in_schema() {
+        let tool = test_tool();
+        let schema = tool.parameters_schema();
+        let actions = schema["properties"]["action"]["enum"].as_array().unwrap();
+        let action_strs: Vec<&str> = actions.iter().filter_map(|v| v.as_str()).collect();
+        assert!(
+            action_strs.contains(&"list"),
+            "schema must include list action"
+        );
+        // Verify list-specific parameters exist
+        assert!(schema["properties"]["page_size"].is_object());
+        assert!(schema["properties"]["page_token"].is_object());
+        assert!(schema["properties"]["context_id"].is_object());
+        assert!(schema["properties"]["status"].is_object());
     }
 
     // ── HTTP integration tests (wiremock) ────────────────────

@@ -5,6 +5,7 @@
 //! - `message/send` (synchronous request/response)
 //! - `message/stream` (Server-Sent Events streaming)
 //! - `tasks/get` (polling)
+//! - `tasks/list` (cursor-based pagination with filters)
 //! - Bearer token authentication
 //!
 //! **Not yet implemented:**
@@ -390,6 +391,7 @@ pub async fn handle_a2a_rpc(
             .await
             .into_response(),
         "tasks/get" => handle_tasks_get(task_store, body).await.into_response(),
+        "tasks/list" => handle_tasks_list(task_store, body).await.into_response(),
         "tasks/cancel" => handle_tasks_cancel(task_store, body).await.into_response(),
         _ => (
             StatusCode::OK,
@@ -720,6 +722,144 @@ async fn handle_tasks_cancel(
     }
 }
 
+async fn handle_tasks_list(
+    task_store: &Arc<TaskStore>,
+    req: JsonRpcRequest,
+) -> (StatusCode, Json<serde_json::Value>) {
+    // Parse parameters
+    let context_id_filter = req
+        .params
+        .get("contextId")
+        .or_else(|| req.params.get("context_id"))
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let status_filter: Option<A2aTaskState> = req
+        .params
+        .get("status")
+        .and_then(|v| v.as_str())
+        .and_then(|s| serde_json::from_value(json!(s)).ok());
+
+    let page_size = req
+        .params
+        .get("pageSize")
+        .or_else(|| req.params.get("page_size"))
+        .and_then(|v| v.as_u64())
+        .map(|n| n.clamp(1, 100) as usize)
+        .unwrap_or(50);
+
+    let page_token = req
+        .params
+        .get("pageToken")
+        .or_else(|| req.params.get("page_token"))
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let history_length = req
+        .params
+        .get("historyLength")
+        .or_else(|| req.params.get("history_length"))
+        .and_then(|v| v.as_u64())
+        .and_then(|n| usize::try_from(n).ok());
+
+    let include_artifacts = req
+        .params
+        .get("includeArtifacts")
+        .or_else(|| req.params.get("include_artifacts"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let tasks = task_store.tasks.read().await;
+
+    // Collect and sort by task ID for stable ordering
+    let mut sorted: Vec<&Task> = tasks.values().collect();
+    sorted.sort_by(|a, b| a.id.cmp(&b.id));
+
+    // Apply filters
+    let filtered: Vec<&Task> = sorted
+        .into_iter()
+        .filter(|t| {
+            if let Some(ref ctx) = context_id_filter {
+                if t.context_id.as_deref() != Some(ctx) {
+                    return false;
+                }
+            }
+            if let Some(ref status) = status_filter {
+                if &t.status.state != status {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect();
+
+    // Apply cursor: skip tasks up to and including page_token
+    let after_cursor: Vec<&Task> = if let Some(ref token) = page_token {
+        let mut found = false;
+        filtered
+            .into_iter()
+            .filter(move |t| {
+                if found {
+                    return true;
+                }
+                if t.id == *token {
+                    found = true;
+                }
+                false
+            })
+            .collect()
+    } else {
+        filtered
+    };
+
+    // Take page_size + 1 to detect if there are more entries
+    let has_more = after_cursor.len() > page_size;
+    let page: Vec<&Task> = after_cursor.into_iter().take(page_size).collect();
+
+    let next_page_token = if has_more {
+        page.last().map(|t| t.id.clone())
+    } else {
+        None
+    };
+
+    // Build response tasks with optional trimming
+    let result_tasks: Vec<serde_json::Value> = page
+        .into_iter()
+        .map(|t| {
+            let mut task = t.clone();
+            if !include_artifacts {
+                task.artifacts = None;
+            }
+            if let Some(max_len) = history_length {
+                if let Some(ref mut history) = task.history {
+                    if history.len() > max_len {
+                        let start = history.len() - max_len;
+                        *history = history.split_off(start);
+                    }
+                }
+            }
+            serde_json::to_value(task).unwrap_or_default()
+        })
+        .collect();
+
+    let mut result = json!({
+        "tasks": result_tasks,
+        "pageSize": page_size,
+    });
+    if let Some(token) = next_page_token {
+        result["nextPageToken"] = json!(token);
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": req.id,
+            "result": result
+        })),
+    )
+}
+
 // ── v1.0 REST-style endpoint handlers ───────────────────────
 
 /// Unwrap a JSON-RPC response into a REST response.
@@ -848,6 +988,65 @@ pub async fn handle_tasks_cancel_rest(
         params: json!({"id": task_id}),
     };
     let (status, Json(body)) = handle_tasks_cancel(task_store, req).await;
+    unwrap_rpc_to_rest(status, body).into_response()
+}
+
+/// Query parameters for `GET /tasks`.
+#[derive(Debug, Deserialize)]
+pub struct ListTasksQuery {
+    pub context_id: Option<String>,
+    pub status: Option<String>,
+    pub page_size: Option<u64>,
+    pub page_token: Option<String>,
+    pub history_length: Option<u64>,
+    pub include_artifacts: Option<bool>,
+}
+
+/// `GET /tasks` — v1.0 REST binding for ListTasks.
+pub async fn handle_tasks_list_rest(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<ListTasksQuery>,
+) -> impl IntoResponse {
+    let (Some(_card), Some(task_store)) = (&state.a2a_agent_card, &state.a2a_task_store) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "A2A protocol not enabled"})),
+        )
+            .into_response();
+    };
+
+    if let Err(resp) = require_a2a_auth(&state, &headers) {
+        return resp.into_response();
+    }
+
+    let mut params = json!({});
+    if let Some(ctx) = query.context_id {
+        params["contextId"] = json!(ctx);
+    }
+    if let Some(status) = query.status {
+        params["status"] = json!(status);
+    }
+    if let Some(ps) = query.page_size {
+        params["pageSize"] = json!(ps);
+    }
+    if let Some(pt) = query.page_token {
+        params["pageToken"] = json!(pt);
+    }
+    if let Some(hl) = query.history_length {
+        params["historyLength"] = json!(hl);
+    }
+    if let Some(ia) = query.include_artifacts {
+        params["includeArtifacts"] = json!(ia);
+    }
+
+    let req = JsonRpcRequest {
+        jsonrpc: "2.0".into(),
+        id: json!(uuid::Uuid::new_v4().to_string()),
+        method: "tasks/list".into(),
+        params,
+    };
+    let (status, Json(body)) = handle_tasks_list(task_store, req).await;
     unwrap_rpc_to_rest(status, body).into_response()
 }
 
@@ -1239,8 +1438,7 @@ pub async fn handle_message_stream_rest(
     });
 
     // ── SSE stream reads from channel — disconnect-safe ─────────
-    let stream =
-        tokio_stream::wrappers::ReceiverStream::new(sse_rx).map(Ok::<_, Infallible>);
+    let stream = tokio_stream::wrappers::ReceiverStream::new(sse_rx).map(Ok::<_, Infallible>);
 
     Sse::new(stream)
         .keep_alive(KeepAlive::default())
@@ -2359,5 +2557,262 @@ mod tests {
         assert_eq!(json["artifact"]["artifactId"], "a-1");
         assert_eq!(json["artifact"]["parts"][0]["text"], "chunk");
         assert!(json["artifact"]["metadata"]["append"].as_bool().unwrap());
+    }
+
+    // ── ListTasks tests ─────────────────────────────────────────
+
+    fn make_task(id: &str, state: A2aTaskState, context_id: Option<&str>) -> Task {
+        Task {
+            id: id.to_string(),
+            status: TaskStatus {
+                state,
+                message: None,
+                timestamp: None,
+            },
+            context_id: context_id.map(String::from),
+            artifacts: Some(vec![Artifact {
+                artifact_id: format!("artifact-{id}"),
+                name: Some("response".into()),
+                description: None,
+                parts: vec![Part::Text {
+                    text: format!("result for {id}"),
+                    metadata: None,
+                }],
+                metadata: None,
+                extensions: None,
+            }]),
+            history: Some(vec![
+                Message {
+                    role: "ROLE_USER".into(),
+                    parts: vec![Part::Text {
+                        text: "hello".into(),
+                        metadata: None,
+                    }],
+                    message_id: "m1".into(),
+                    context_id: context_id.map(String::from),
+                    metadata: None,
+                },
+                Message {
+                    role: "ROLE_AGENT".into(),
+                    parts: vec![Part::Text {
+                        text: "world".into(),
+                        metadata: None,
+                    }],
+                    message_id: "m2".into(),
+                    context_id: context_id.map(String::from),
+                    metadata: None,
+                },
+            ]),
+            metadata: None,
+        }
+    }
+
+    fn list_rpc(params: serde_json::Value) -> JsonRpcRequest {
+        JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: json!(1),
+            method: "tasks/list".into(),
+            params,
+        }
+    }
+
+    #[tokio::test]
+    async fn tasks_list_returns_empty_for_no_tasks() {
+        let store = Arc::new(TaskStore::new());
+        let req = list_rpc(json!({}));
+        let (status, Json(body)) = handle_tasks_list(&store, req).await;
+        assert_eq!(status, StatusCode::OK);
+        let result = &body["result"];
+        assert_eq!(result["tasks"].as_array().unwrap().len(), 0);
+        assert_eq!(result["pageSize"], 50);
+        assert!(result.get("nextPageToken").is_none() || result["nextPageToken"].is_null());
+    }
+
+    #[tokio::test]
+    async fn tasks_list_returns_all_tasks() {
+        let store = Arc::new(TaskStore::new());
+        {
+            let mut tasks = store.tasks.write().await;
+            tasks.insert("a".into(), make_task("a", A2aTaskState::Completed, None));
+            tasks.insert("b".into(), make_task("b", A2aTaskState::Working, None));
+            tasks.insert("c".into(), make_task("c", A2aTaskState::Failed, None));
+        }
+        let req = list_rpc(json!({"includeArtifacts": true}));
+        let (status, Json(body)) = handle_tasks_list(&store, req).await;
+        assert_eq!(status, StatusCode::OK);
+        let tasks = body["result"]["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 3);
+        // Sorted by ID
+        assert_eq!(tasks[0]["id"], "a");
+        assert_eq!(tasks[1]["id"], "b");
+        assert_eq!(tasks[2]["id"], "c");
+    }
+
+    #[tokio::test]
+    async fn tasks_list_filters_by_context_id() {
+        let store = Arc::new(TaskStore::new());
+        {
+            let mut tasks = store.tasks.write().await;
+            tasks.insert(
+                "a".into(),
+                make_task("a", A2aTaskState::Completed, Some("ctx-1")),
+            );
+            tasks.insert(
+                "b".into(),
+                make_task("b", A2aTaskState::Completed, Some("ctx-2")),
+            );
+            tasks.insert(
+                "c".into(),
+                make_task("c", A2aTaskState::Working, Some("ctx-1")),
+            );
+        }
+        let req = list_rpc(json!({"contextId": "ctx-1", "includeArtifacts": true}));
+        let (_, Json(body)) = handle_tasks_list(&store, req).await;
+        let tasks = body["result"]["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 2);
+        assert!(tasks.iter().all(|t| t["contextId"] == "ctx-1"));
+    }
+
+    #[tokio::test]
+    async fn tasks_list_filters_by_status() {
+        let store = Arc::new(TaskStore::new());
+        {
+            let mut tasks = store.tasks.write().await;
+            tasks.insert("a".into(), make_task("a", A2aTaskState::Completed, None));
+            tasks.insert("b".into(), make_task("b", A2aTaskState::Working, None));
+            tasks.insert("c".into(), make_task("c", A2aTaskState::Completed, None));
+        }
+        let req = list_rpc(json!({"status": "TASK_STATE_COMPLETED", "includeArtifacts": true}));
+        let (_, Json(body)) = handle_tasks_list(&store, req).await;
+        let tasks = body["result"]["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 2);
+        assert!(
+            tasks
+                .iter()
+                .all(|t| t["status"]["state"] == "TASK_STATE_COMPLETED")
+        );
+    }
+
+    #[tokio::test]
+    async fn tasks_list_paginates_correctly() {
+        let store = Arc::new(TaskStore::new());
+        {
+            let mut tasks = store.tasks.write().await;
+            for i in 0..5 {
+                let id = format!("task-{i:03}");
+                tasks.insert(id.clone(), make_task(&id, A2aTaskState::Completed, None));
+            }
+        }
+
+        // First page of 2
+        let req = list_rpc(json!({"pageSize": 2}));
+        let (_, Json(body)) = handle_tasks_list(&store, req).await;
+        let result = &body["result"];
+        let tasks = result["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0]["id"], "task-000");
+        assert_eq!(tasks[1]["id"], "task-001");
+        let next_token = result["nextPageToken"].as_str().unwrap();
+        assert_eq!(next_token, "task-001");
+
+        // Second page using cursor
+        let req = list_rpc(json!({"pageSize": 2, "pageToken": next_token}));
+        let (_, Json(body)) = handle_tasks_list(&store, req).await;
+        let result = &body["result"];
+        let tasks = result["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0]["id"], "task-002");
+        assert_eq!(tasks[1]["id"], "task-003");
+        let next_token = result["nextPageToken"].as_str().unwrap();
+        assert_eq!(next_token, "task-003");
+
+        // Third page — only 1 remaining
+        let req = list_rpc(json!({"pageSize": 2, "pageToken": next_token}));
+        let (_, Json(body)) = handle_tasks_list(&store, req).await;
+        let result = &body["result"];
+        let tasks = result["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0]["id"], "task-004");
+        assert!(result.get("nextPageToken").is_none() || result["nextPageToken"].is_null());
+    }
+
+    #[tokio::test]
+    async fn tasks_list_respects_page_size() {
+        let store = Arc::new(TaskStore::new());
+        {
+            let mut tasks = store.tasks.write().await;
+            for i in 0..10 {
+                let id = format!("t-{i:02}");
+                tasks.insert(id.clone(), make_task(&id, A2aTaskState::Completed, None));
+            }
+        }
+
+        // page_size=3 should return exactly 3
+        let req = list_rpc(json!({"pageSize": 3}));
+        let (_, Json(body)) = handle_tasks_list(&store, req).await;
+        let tasks = body["result"]["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 3);
+        assert_eq!(body["result"]["pageSize"], 3);
+
+        // page_size clamped to max 100
+        let req = list_rpc(json!({"pageSize": 200}));
+        let (_, Json(body)) = handle_tasks_list(&store, req).await;
+        let tasks = body["result"]["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 10); // only 10 tasks exist
+        assert_eq!(body["result"]["pageSize"], 100);
+    }
+
+    #[tokio::test]
+    async fn tasks_list_strips_artifacts_by_default() {
+        let store = Arc::new(TaskStore::new());
+        {
+            let mut tasks = store.tasks.write().await;
+            tasks.insert("a".into(), make_task("a", A2aTaskState::Completed, None));
+        }
+        // Default: include_artifacts=false
+        let req = list_rpc(json!({}));
+        let (_, Json(body)) = handle_tasks_list(&store, req).await;
+        let tasks = body["result"]["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 1);
+        // Artifacts should be stripped (null or absent)
+        assert!(tasks[0].get("artifacts").is_none() || tasks[0]["artifacts"].is_null());
+    }
+
+    #[tokio::test]
+    async fn tasks_list_includes_artifacts_when_requested() {
+        let store = Arc::new(TaskStore::new());
+        {
+            let mut tasks = store.tasks.write().await;
+            tasks.insert("a".into(), make_task("a", A2aTaskState::Completed, None));
+        }
+        let req = list_rpc(json!({"includeArtifacts": true}));
+        let (_, Json(body)) = handle_tasks_list(&store, req).await;
+        let tasks = body["result"]["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert!(tasks[0]["artifacts"].is_array());
+        assert_eq!(tasks[0]["artifacts"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn tasks_list_via_rpc_dispatch() {
+        let state = a2a_test_state(None, false, &[]);
+        let task_store = state.a2a_task_store.as_ref().unwrap();
+        {
+            let mut tasks = task_store.tasks.write().await;
+            tasks.insert("x".into(), make_task("x", A2aTaskState::Working, None));
+        }
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: json!(1),
+            method: "tasks/list".into(),
+            params: json!({}),
+        };
+        let resp = handle_a2a_rpc(State(state), HeaderMap::new(), Json(req))
+            .await
+            .into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(body["result"]["tasks"].as_array().unwrap().len(), 1);
     }
 }
