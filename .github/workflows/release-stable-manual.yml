@@ -196,6 +196,12 @@ jobs:
             linker_env: CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER
             linker: aarch64-linux-gnu-gcc
           - os: ubuntu-22.04
+            target: aarch64-unknown-linux-musl
+            artifact: hrafn
+            ext: tar.gz
+            use_cross: true
+            cargo_features: channel-lark,whatsapp-web  # matrix-sdk hits recursion limit under musl
+          - os: ubuntu-22.04
             target: armv7-unknown-linux-gnueabihf
             artifact: hrafn
             ext: tar.gz
@@ -267,12 +273,17 @@ jobs:
             export CFLAGS_arm_unknown_linux_gnueabihf="-march=armv6 -mfpu=vfp -mfloat-abi=hard"
             export CARGO_TARGET_ARM_UNKNOWN_LINUX_GNUEABIHF_RUSTFLAGS="-C target-feature=-neon"
           fi
+          BUILD_CMD="cargo"
+          if [ "${{ matrix.use_cross || 'false' }}" = "true" ]; then
+            cargo install cross --locked
+            BUILD_CMD="cross"
+          fi
           # Use matrix-level feature override if set, otherwise use global RELEASE_CARGO_FEATURES
           FEATURES="${{ matrix.cargo_features || env.RELEASE_CARGO_FEATURES }}"
           if [ "${{ matrix.skip_prometheus || 'false' }}" = "true" ]; then
-            cargo build --release --locked --no-default-features --features "${FEATURES},channel-nostr,skill-creation" --target ${{ matrix.target }}
+            $BUILD_CMD build --release --locked --no-default-features --features "${FEATURES},channel-nostr,skill-creation" --target ${{ matrix.target }}
           else
-            cargo build --release --locked --features "${FEATURES}" --target ${{ matrix.target }}
+            $BUILD_CMD build --release --locked --features "${FEATURES}" --target ${{ matrix.target }}
           fi
 
       - name: Check binary size
@@ -377,6 +388,7 @@ jobs:
           required_assets=(
             "hrafn-x86_64-unknown-linux-gnu.tar.gz"
             "hrafn-aarch64-unknown-linux-gnu.tar.gz"
+            "hrafn-aarch64-unknown-linux-musl.tar.gz"
             "hrafn-armv7-unknown-linux-gnueabihf.tar.gz"
             "hrafn-arm-unknown-linux-gnueabihf.tar.gz"
             "hrafn-aarch64-apple-darwin.tar.gz"
