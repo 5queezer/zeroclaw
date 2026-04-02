@@ -485,8 +485,8 @@ impl SchemaCleanr {
                 match &literal_value {
                     Value::String(_) => "string".to_string(),
                     Value::Bool(_) => "boolean".to_string(),
-                    Value::Number(n) if n.is_f64() => "number".to_string(),
-                    Value::Number(_) => "integer".to_string(),
+                    Value::Number(n) if n.is_i64() || n.is_u64() => "integer".to_string(),
+                    Value::Number(_) => "number".to_string(),
                     _ => return None,
                 }
             };
