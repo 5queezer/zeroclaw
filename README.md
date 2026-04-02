@@ -145,7 +145,7 @@ OC Plugin → MCP Adapter (Node.js) → Hrafn tests it → Community validates
   → Port Queue → Native Rust implementation → Review & merge
 ```
 
-See `docs/oc-bridge.md` for setup.
+*OC Bridge is planned for a future release (M3).*
 
 ## Key Integrations
 
