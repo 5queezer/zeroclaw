@@ -47,6 +47,12 @@ impl TaskStore {
     }
 }
 
+impl Default for TaskStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // ── v1.0 Protocol Types ─────────────────────────────────────────
 
 /// A2A v1.0 message part — oneof discriminated by which field is present.
