@@ -6631,6 +6631,7 @@ mod tests {
         assert!(tool_results.content.contains("Skipped duplicate tool call"));
     }
 
+    #[cfg(feature = "tool-shell")]
     #[tokio::test]
     async fn run_tool_call_loop_allows_low_risk_shell_in_non_interactive_mode() {
         let provider = ScriptedProvider::from_text_responses(vec![

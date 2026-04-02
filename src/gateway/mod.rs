@@ -7,6 +7,7 @@
 //! - Request timeouts (30s) to prevent slow-loris attacks
 //! - Header sanitization (handled by axum/hyper)
 
+#[cfg(feature = "tool-a2a")]
 pub mod a2a;
 pub mod api;
 pub mod api_pairing;
@@ -375,8 +376,10 @@ pub struct AppState {
     #[cfg(feature = "webauthn")]
     pub webauthn: Option<Arc<api_webauthn::WebAuthnState>>,
     /// Cached A2A agent card (populated when `a2a.enabled`)
+    #[cfg(feature = "tool-a2a")]
     pub a2a_agent_card: Option<Arc<serde_json::Value>>,
     /// In-memory A2A task store (populated when `a2a.enabled`)
+    #[cfg(feature = "tool-a2a")]
     pub a2a_task_store: Option<Arc<a2a::TaskStore>>,
 }
 
@@ -832,6 +835,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
     };
 
     // ── A2A (Agent-to-Agent) protocol ────────────────────────
+    #[cfg(feature = "tool-a2a")]
     let (a2a_agent_card, a2a_task_store) = if config.a2a.enabled {
         // Security: warn when no authentication is configured for A2A
         let has_bearer = config
@@ -930,7 +934,9 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         } else {
             None
         },
+        #[cfg(feature = "tool-a2a")]
         a2a_agent_card,
+        #[cfg(feature = "tool-a2a")]
         a2a_task_store,
     };
 
@@ -941,6 +947,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
 
     // A2A routes need a larger body limit (configurable, default 10MB) to
     // support binary message parts.  Only built when A2A is enabled.
+    #[cfg(feature = "tool-a2a")]
     let a2a_router = if config.a2a.enabled {
         Some(
             Router::new()
@@ -1043,6 +1050,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         );
 
     // ── A2A (Agent-to-Agent) protocol routes (with custom body limit) ──
+    #[cfg(feature = "tool-a2a")]
     let inner = if let Some(a2a_router) = a2a_router {
         inner.merge(a2a_router)
     } else {
@@ -2439,7 +2447,9 @@ mod tests {
             canvas_store: CanvasStore::new(),
             #[cfg(feature = "webauthn")]
             webauthn: None,
+            #[cfg(feature = "tool-a2a")]
             a2a_agent_card: None,
+            #[cfg(feature = "tool-a2a")]
             a2a_task_store: None,
         };
 
@@ -2509,7 +2519,9 @@ mod tests {
             canvas_store: CanvasStore::new(),
             #[cfg(feature = "webauthn")]
             webauthn: None,
+            #[cfg(feature = "tool-a2a")]
             a2a_agent_card: None,
+            #[cfg(feature = "tool-a2a")]
             a2a_task_store: None,
         };
 
@@ -2905,7 +2917,9 @@ mod tests {
             canvas_store: CanvasStore::new(),
             #[cfg(feature = "webauthn")]
             webauthn: None,
+            #[cfg(feature = "tool-a2a")]
             a2a_agent_card: None,
+            #[cfg(feature = "tool-a2a")]
             a2a_task_store: None,
         };
 
@@ -2990,7 +3004,9 @@ mod tests {
             canvas_store: CanvasStore::new(),
             #[cfg(feature = "webauthn")]
             webauthn: None,
+            #[cfg(feature = "tool-a2a")]
             a2a_agent_card: None,
+            #[cfg(feature = "tool-a2a")]
             a2a_task_store: None,
         };
 
@@ -3081,7 +3097,9 @@ mod tests {
             canvas_store: CanvasStore::new(),
             #[cfg(feature = "webauthn")]
             webauthn: None,
+            #[cfg(feature = "tool-a2a")]
             a2a_agent_card: None,
+            #[cfg(feature = "tool-a2a")]
             a2a_task_store: None,
         };
 
@@ -3145,7 +3163,9 @@ mod tests {
             canvas_store: CanvasStore::new(),
             #[cfg(feature = "webauthn")]
             webauthn: None,
+            #[cfg(feature = "tool-a2a")]
             a2a_agent_card: None,
+            #[cfg(feature = "tool-a2a")]
             a2a_task_store: None,
         };
 
@@ -3214,7 +3234,9 @@ mod tests {
             canvas_store: CanvasStore::new(),
             #[cfg(feature = "webauthn")]
             webauthn: None,
+            #[cfg(feature = "tool-a2a")]
             a2a_agent_card: None,
+            #[cfg(feature = "tool-a2a")]
             a2a_task_store: None,
         };
 
@@ -3291,7 +3313,9 @@ mod tests {
             canvas_store: CanvasStore::new(),
             #[cfg(feature = "webauthn")]
             webauthn: None,
+            #[cfg(feature = "tool-a2a")]
             a2a_agent_card: None,
+            #[cfg(feature = "tool-a2a")]
             a2a_task_store: None,
         };
 
@@ -3362,7 +3386,9 @@ mod tests {
             canvas_store: CanvasStore::new(),
             #[cfg(feature = "webauthn")]
             webauthn: None,
+            #[cfg(feature = "tool-a2a")]
             a2a_agent_card: None,
+            #[cfg(feature = "tool-a2a")]
             a2a_task_store: None,
         };
 

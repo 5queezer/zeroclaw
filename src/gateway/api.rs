@@ -1701,7 +1701,9 @@ mod tests {
             canvas_store: crate::tools::canvas::CanvasStore::new(),
             #[cfg(feature = "webauthn")]
             webauthn: None,
+            #[cfg(feature = "tool-a2a")]
             a2a_agent_card: None,
+            #[cfg(feature = "tool-a2a")]
             a2a_task_store: None,
         }
     }
