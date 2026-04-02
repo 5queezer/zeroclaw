@@ -5,13 +5,17 @@
 //! - `message/send` (synchronous request/response)
 //! - `message/stream` (Server-Sent Events streaming)
 //! - `tasks/get` (polling)
+//! - `tasks/list` (cursor-based pagination with filters)
+//! - `tasks/getByContextId` (multi-turn conversation threading)
+//! - `tasks/cancel` (cancel in-flight tasks)
+//! - `return_immediately` async task execution
+//! - TTL-based task store eviction
 //! - Bearer token authentication
+//! - v1.0 error model (`google.rpc.Status` with `ErrorInfo` details)
 //!
 //! **Not yet implemented:**
-//! - `input-required` state / multi-turn conversations (`contextId`)
 //! - Push notifications
 //! - Structured/binary message parts (`data`, `raw`)
-//! - Async task execution
 //! - Task persistence
 
 use super::AppState;
@@ -41,13 +45,103 @@ const MAX_TASKS: usize = 10_000;
 /// In-memory store for A2A task state.
 pub struct TaskStore {
     tasks: RwLock<HashMap<String, Task>>,
+    /// Maps `context_id` → list of task IDs sharing that context.
+    context_index: RwLock<HashMap<String, Vec<String>>>,
+    /// Tracks when tasks entered a terminal state for TTL-based eviction.
+    timestamps: RwLock<HashMap<String, std::time::Instant>>,
 }
 
 impl TaskStore {
     pub fn new() -> Self {
         Self {
             tasks: RwLock::new(HashMap::new()),
+            context_index: RwLock::new(HashMap::new()),
+            timestamps: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// Record a task→context association in the index.
+    async fn index_context(&self, context_id: &str, task_id: &str) {
+        let mut idx = self.context_index.write().await;
+        idx.entry(context_id.to_owned())
+            .or_default()
+            .push(task_id.to_owned());
+    }
+
+    /// Return all tasks belonging to a given `context_id`.
+    pub async fn tasks_by_context(&self, context_id: &str) -> Vec<Task> {
+        let idx = self.context_index.read().await;
+        let Some(ids) = idx.get(context_id) else {
+            return Vec::new();
+        };
+        let tasks = self.tasks.read().await;
+        ids.iter().filter_map(|id| tasks.get(id).cloned()).collect()
+    }
+
+    /// Record the instant a task became terminal (Completed, Failed, Canceled, Rejected).
+    pub async fn mark_terminal(&self, task_id: &str) {
+        let mut ts = self.timestamps.write().await;
+        ts.insert(task_id.to_string(), std::time::Instant::now());
+    }
+
+    /// Remove terminal tasks whose timestamp is older than `ttl`.
+    /// Returns the number of evicted tasks.
+    pub async fn evict_expired(&self, ttl: std::time::Duration) -> usize {
+        let now = std::time::Instant::now();
+
+        // First, collect task IDs to evict.
+        let expired_ids: Vec<String> = {
+            let ts = self.timestamps.read().await;
+            ts.iter()
+                .filter(|(_, instant)| now.duration_since(**instant) > ttl)
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+
+        if expired_ids.is_empty() {
+            return 0;
+        }
+
+        // Collect context_ids for evicted tasks so we can clean the index.
+        let evicted_context_ids: Vec<(String, String)> = {
+            let tasks = self.tasks.read().await;
+            expired_ids
+                .iter()
+                .filter_map(|id| {
+                    tasks
+                        .get(id)
+                        .and_then(|t| t.context_id.as_ref().map(|ctx| (ctx.clone(), id.clone())))
+                })
+                .collect()
+        };
+
+        // Remove from tasks and timestamps maps.
+        let mut tasks = self.tasks.write().await;
+        let mut ts = self.timestamps.write().await;
+        let mut count = 0;
+        for id in &expired_ids {
+            if tasks.remove(id).is_some() {
+                count += 1;
+            }
+            ts.remove(id);
+        }
+        drop(tasks);
+        drop(ts);
+
+        // Clean up context_index: remove evicted task IDs and prune empty entries.
+        if !evicted_context_ids.is_empty() {
+            let mut idx = self.context_index.write().await;
+            for (ctx, tid) in &evicted_context_ids {
+                if let Some(ids) = idx.get_mut(ctx) {
+                    ids.retain(|id| id != tid);
+                    if ids.is_empty() {
+                        idx.remove(ctx);
+                    }
+                }
+            }
+        }
+
+        count
     }
 }
 
@@ -55,6 +149,39 @@ impl Default for TaskStore {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Spawn a background task that periodically evicts expired terminal tasks.
+///
+/// Accepts a `shutdown_rx` watch receiver so the task terminates cleanly when
+/// the gateway shuts down. Zero values for `ttl_secs` and `interval_secs` are
+/// clamped to 1 to prevent busy-loops or instant eviction.
+pub fn spawn_eviction_task(
+    task_store: Arc<TaskStore>,
+    ttl_secs: u64,
+    interval_secs: u64,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    let ttl_secs = ttl_secs.max(1);
+    let interval_secs = interval_secs.max(1);
+    tokio::spawn(async move {
+        let ttl = std::time::Duration::from_secs(ttl_secs);
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    let evicted = task_store.evict_expired(ttl).await;
+                    if evicted > 0 {
+                        tracing::debug!(evicted, "A2A task store eviction pass");
+                    }
+                }
+                _ = shutdown_rx.changed() => {
+                    tracing::debug!("A2A eviction task shutting down");
+                    break;
+                }
+            }
+        }
+    })
 }
 
 // ── v1.0 Protocol Types ─────────────────────────────────────────
@@ -203,10 +330,36 @@ pub struct JsonRpcResponse {
     pub error: Option<JsonRpcError>,
 }
 
+/// google.rpc.ErrorInfo detail — included in the `details` array
+/// of JSON-RPC errors per A2A v1.0 error model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct A2aErrorDetail {
+    #[serde(rename = "@type")]
+    pub error_type: String,
+    pub reason: String,
+    pub domain: String,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub metadata: HashMap<String, String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct JsonRpcError {
     pub code: i32,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Vec<A2aErrorDetail>>,
+}
+
+/// A2A v1.0 error reason codes (used in `A2aErrorDetail.reason`).
+pub mod error_reason {
+    pub const INVALID_REQUEST: &str = "INVALID_REQUEST";
+    pub const METHOD_NOT_FOUND: &str = "METHOD_NOT_FOUND";
+    pub const INVALID_PARAMS: &str = "INVALID_PARAMS";
+    pub const UNAUTHORIZED: &str = "UNAUTHORIZED";
+    pub const TASK_NOT_FOUND: &str = "TASK_NOT_FOUND";
+    pub const TASK_ALREADY_TERMINAL: &str = "TASK_ALREADY_TERMINAL";
+    pub const TASK_STORE_FULL: &str = "TASK_STORE_FULL";
+    pub const INTERNAL_ERROR: &str = "INTERNAL_ERROR";
 }
 
 // ── v1.0 Streaming types ────────────────────────────────────────
@@ -380,7 +533,12 @@ pub async fn handle_a2a_rpc(
     if body.jsonrpc != "2.0" {
         return (
             StatusCode::BAD_REQUEST,
-            Json(rpc_error(body.id, -32600, "Invalid JSON-RPC version")),
+            Json(rpc_error(
+                body.id,
+                -32600,
+                "Invalid JSON-RPC version",
+                Some(error_reason::INVALID_REQUEST),
+            )),
         )
             .into_response();
     }
@@ -390,13 +548,18 @@ pub async fn handle_a2a_rpc(
             .await
             .into_response(),
         "tasks/get" => handle_tasks_get(task_store, body).await.into_response(),
+        "tasks/list" => handle_tasks_list(task_store, body).await.into_response(),
         "tasks/cancel" => handle_tasks_cancel(task_store, body).await.into_response(),
+        "tasks/getByContextId" => handle_tasks_get_by_context(task_store, body)
+            .await
+            .into_response(),
         _ => (
             StatusCode::OK,
             Json(rpc_error(
                 body.id,
                 -32601,
                 &format!("Method not found: {}", body.method),
+                Some(error_reason::METHOD_NOT_FOUND),
             )),
         )
             .into_response(),
@@ -426,9 +589,12 @@ fn require_a2a_auth(
                 } else {
                     Err((
                         StatusCode::UNAUTHORIZED,
-                        Json(
-                            json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32000, "message": "Unauthorized"}}),
-                        ),
+                        Json(rpc_error(
+                            json!(null),
+                            -32000,
+                            "Unauthorized",
+                            Some(error_reason::UNAUTHORIZED),
+                        )),
                     ))
                 };
             }
@@ -445,9 +611,12 @@ fn require_a2a_auth(
     } else {
         Err((
             StatusCode::UNAUTHORIZED,
-            Json(
-                json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32000, "message": "Unauthorized"}}),
-            ),
+            Json(rpc_error(
+                json!(null),
+                -32000,
+                "Unauthorized",
+                Some(error_reason::UNAUTHORIZED),
+            )),
         ))
     }
 }
@@ -463,13 +632,35 @@ async fn handle_message_send(
     let (message_text, inbound_msg, context_id) = match parse_inbound_message(&req.params) {
         Ok(v) => v,
         Err(msg) => {
-            return (StatusCode::OK, Json(rpc_error(req.id, -32602, msg)));
+            return (
+                StatusCode::OK,
+                Json(rpc_error(
+                    req.id,
+                    -32602,
+                    msg,
+                    Some(error_reason::INVALID_PARAMS),
+                )),
+            );
         }
     };
 
+    // Check for return_immediately flag in configuration.
+    let return_immediately = req
+        .params
+        .pointer("/configuration/returnImmediately")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
     let task_id = uuid::Uuid::new_v4().to_string();
 
-    // Store task as working (enforce capacity limit to prevent memory exhaustion)
+    // Choose initial state: Submitted when async, Working when synchronous.
+    let initial_state = if return_immediately {
+        A2aTaskState::Submitted
+    } else {
+        A2aTaskState::Working
+    };
+
+    // Store task (enforce capacity limit to prevent memory exhaustion)
     {
         let mut tasks = task_store.tasks.write().await;
         if tasks.len() >= MAX_TASKS {
@@ -482,6 +673,7 @@ async fn handle_message_send(
                         req.id,
                         -32000,
                         "Task store full — too many in-flight tasks",
+                        Some(error_reason::TASK_STORE_FULL),
                     )),
                 );
             }
@@ -491,19 +683,149 @@ async fn handle_message_send(
             Task {
                 id: task_id.clone(),
                 status: TaskStatus {
-                    state: A2aTaskState::Working,
+                    state: initial_state,
                     message: None,
                     timestamp: Some(chrono::Utc::now().to_rfc3339()),
                 },
                 context_id: Some(context_id.clone()),
                 artifacts: None,
-                history: None,
+                history: Some(vec![inbound_msg.clone()]),
                 metadata: None,
             },
         );
     }
+    task_store.index_context(&context_id, &task_id).await;
 
-    // Process via agent pipeline
+    // Build conversation history from prior tasks in this context
+    let prompt_text = build_context_prompt(task_store, &context_id, &task_id, &message_text).await;
+
+    // If return_immediately, spawn background processing and return Submitted task.
+    if return_immediately {
+        let bg_store = Arc::clone(task_store);
+        let config = state.config.lock().clone();
+        let tid = task_id.clone();
+        let ctx = context_id.clone();
+        let bg_prompt = prompt_text.clone();
+        let bg_session = format!("a2a-ctx-{}", &context_id);
+        let telegram_notify = config.a2a.notify_chat_id.and_then(|chat_id| {
+            config
+                .channels_config
+                .telegram
+                .as_ref()
+                .map(|t| (t.bot_token.clone(), chat_id))
+        });
+
+        tokio::spawn(async move {
+            match Box::pin(crate::agent::process_message(
+                config,
+                &bg_prompt,
+                Some(&bg_session),
+            ))
+            .await
+            {
+                Ok(response) => {
+                    if let Some((ref token, chat_id)) = telegram_notify {
+                        let notice = format!(
+                            "\u{1f4e8} *A2A received:* _{}_\n\n{}",
+                            message_text.replace('*', "\\*").replace('_', "\\_"),
+                            response
+                        );
+                        notify_telegram_chat(token, chat_id, &notice).await;
+                    }
+
+                    let response_msg = Message {
+                        role: "ROLE_AGENT".to_string(),
+                        parts: vec![Part::Text {
+                            text: response.clone(),
+                            metadata: None,
+                        }],
+                        message_id: uuid::Uuid::new_v4().to_string(),
+                        context_id: Some(ctx.clone()),
+                        metadata: None,
+                    };
+                    let artifact = Artifact {
+                        artifact_id: uuid::Uuid::new_v4().to_string(),
+                        name: Some("response".to_string()),
+                        description: None,
+                        parts: vec![Part::Text {
+                            text: response,
+                            metadata: None,
+                        }],
+                        metadata: None,
+                        extensions: None,
+                    };
+                    let task = Task {
+                        id: tid.clone(),
+                        status: TaskStatus {
+                            state: A2aTaskState::Completed,
+                            message: Some(response_msg),
+                            timestamp: Some(chrono::Utc::now().to_rfc3339()),
+                        },
+                        context_id: Some(ctx),
+                        artifacts: Some(vec![artifact]),
+                        history: Some(vec![inbound_msg]),
+                        metadata: None,
+                    };
+                    let mut tasks = bg_store.tasks.write().await;
+                    if !tasks
+                        .get(&tid)
+                        .is_some_and(|t| t.status.state == A2aTaskState::Canceled)
+                    {
+                        tasks.insert(tid.clone(), task);
+                    }
+                    drop(tasks);
+                    bg_store.mark_terminal(&tid).await;
+                }
+                Err(e) => {
+                    tracing::error!(task_id = %tid, error = %e, "A2A async task failed");
+                    let error_msg = Message {
+                        role: "ROLE_AGENT".to_string(),
+                        parts: vec![Part::Text {
+                            text: "Internal processing error".to_string(),
+                            metadata: None,
+                        }],
+                        message_id: uuid::Uuid::new_v4().to_string(),
+                        context_id: Some(ctx.clone()),
+                        metadata: None,
+                    };
+                    let task = Task {
+                        id: tid.clone(),
+                        status: TaskStatus {
+                            state: A2aTaskState::Failed,
+                            message: Some(error_msg),
+                            timestamp: Some(chrono::Utc::now().to_rfc3339()),
+                        },
+                        context_id: Some(ctx),
+                        artifacts: None,
+                        history: Some(vec![inbound_msg]),
+                        metadata: None,
+                    };
+                    let mut tasks = bg_store.tasks.write().await;
+                    if !tasks
+                        .get(&tid)
+                        .is_some_and(|t| t.status.state == A2aTaskState::Canceled)
+                    {
+                        tasks.insert(tid.clone(), task);
+                    }
+                    drop(tasks);
+                    bg_store.mark_terminal(&tid).await;
+                }
+            }
+        });
+
+        let tasks = task_store.tasks.read().await;
+        let task = tasks.get(&task_id).cloned().unwrap();
+        return (
+            StatusCode::OK,
+            Json(json!({
+                "jsonrpc": "2.0",
+                "id": req.id,
+                "result": task
+            })),
+        );
+    }
+
+    // Synchronous processing (default).
     let config = state.config.lock().clone();
     let telegram_notify = config.a2a.notify_chat_id.and_then(|chat_id| {
         config
@@ -512,10 +834,10 @@ async fn handle_message_send(
             .as_ref()
             .map(|t| (t.bot_token.clone(), chat_id))
     });
-    let session_id = format!("a2a-{task_id}");
+    let session_id = format!("a2a-ctx-{context_id}");
     match Box::pin(crate::agent::process_message(
         config,
-        &message_text,
+        &prompt_text,
         Some(&session_id),
     ))
     .await
@@ -583,6 +905,8 @@ async fn handle_message_send(
                 }
             };
 
+            task_store.mark_terminal(&task_id).await;
+
             (
                 StatusCode::OK,
                 Json(json!({
@@ -633,6 +957,8 @@ async fn handle_message_send(
                 }
             };
 
+            task_store.mark_terminal(&task_id).await;
+
             (
                 StatusCode::OK,
                 Json(json!({
@@ -654,7 +980,12 @@ async fn handle_tasks_get(
     if task_id.is_empty() {
         return (
             StatusCode::OK,
-            Json(rpc_error(req.id, -32602, "Invalid params: missing task id")),
+            Json(rpc_error(
+                req.id,
+                -32602,
+                "Invalid params: missing task id",
+                Some(error_reason::INVALID_PARAMS),
+            )),
         );
     }
 
@@ -670,7 +1001,12 @@ async fn handle_tasks_get(
         ),
         None => (
             StatusCode::OK,
-            Json(rpc_error(req.id, -32001, "Task not found")),
+            Json(rpc_error(
+                req.id,
+                -32001,
+                "Task not found",
+                Some(error_reason::TASK_NOT_FOUND),
+            )),
         ),
     }
 }
@@ -684,26 +1020,42 @@ async fn handle_tasks_cancel(
     if task_id.is_empty() {
         return (
             StatusCode::OK,
-            Json(rpc_error(req.id, -32602, "Invalid params: missing task id")),
+            Json(rpc_error(
+                req.id,
+                -32602,
+                "Invalid params: missing task id",
+                Some(error_reason::INVALID_PARAMS),
+            )),
         );
     }
 
-    let mut tasks = task_store.tasks.write().await;
-    match tasks.get_mut(task_id) {
-        Some(task) => {
-            if task.status.state.is_terminal() {
-                return (
-                    StatusCode::OK,
-                    Json(rpc_error(
-                        req.id,
-                        -32002,
-                        "Task is already in a terminal state",
-                    )),
-                );
+    let result = {
+        let mut tasks = task_store.tasks.write().await;
+        match tasks.get_mut(task_id) {
+            Some(task) => {
+                if task.status.state.is_terminal() {
+                    return (
+                        StatusCode::OK,
+                        Json(rpc_error(
+                            req.id,
+                            -32002,
+                            "Task is already in a terminal state",
+                            Some(error_reason::TASK_ALREADY_TERMINAL),
+                        )),
+                    );
+                }
+                task.status.state = A2aTaskState::Canceled;
+                task.status.timestamp = Some(chrono::Utc::now().to_rfc3339());
+                let task = task.clone();
+                Some((task_id.to_string(), task))
             }
-            task.status.state = A2aTaskState::Canceled;
-            task.status.timestamp = Some(chrono::Utc::now().to_rfc3339());
-            let task = task.clone();
+            None => None,
+        }
+    };
+
+    match result {
+        Some((tid, task)) => {
+            task_store.mark_terminal(&tid).await;
             (
                 StatusCode::OK,
                 Json(json!({
@@ -715,9 +1067,202 @@ async fn handle_tasks_cancel(
         }
         None => (
             StatusCode::OK,
-            Json(rpc_error(req.id, -32001, "Task not found")),
+            Json(rpc_error(
+                req.id,
+                -32001,
+                "Task not found",
+                Some(error_reason::TASK_NOT_FOUND),
+            )),
         ),
     }
+}
+
+async fn handle_tasks_list(
+    task_store: &Arc<TaskStore>,
+    req: JsonRpcRequest,
+) -> (StatusCode, Json<serde_json::Value>) {
+    // Parse parameters
+    let context_id_filter = req
+        .params
+        .get("contextId")
+        .or_else(|| req.params.get("context_id"))
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let status_filter: Option<A2aTaskState> = req
+        .params
+        .get("status")
+        .and_then(|v| v.as_str())
+        .and_then(|s| serde_json::from_value(json!(s)).ok());
+
+    let page_size = req
+        .params
+        .get("pageSize")
+        .or_else(|| req.params.get("page_size"))
+        .and_then(|v| v.as_u64())
+        .map(|n| n.clamp(1, 100) as usize)
+        .unwrap_or(50);
+
+    let page_token = req
+        .params
+        .get("pageToken")
+        .or_else(|| req.params.get("page_token"))
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let history_length = req
+        .params
+        .get("historyLength")
+        .or_else(|| req.params.get("history_length"))
+        .and_then(|v| v.as_u64())
+        .and_then(|n| usize::try_from(n).ok());
+
+    let include_artifacts = req
+        .params
+        .get("includeArtifacts")
+        .or_else(|| req.params.get("include_artifacts"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let status_timestamp_after = req
+        .params
+        .get("statusTimestampAfter")
+        .or_else(|| req.params.get("status_timestamp_after"))
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let tasks = task_store.tasks.read().await;
+
+    // Collect and sort by task ID for stable ordering
+    let mut sorted: Vec<&Task> = tasks.values().collect();
+    sorted.sort_by(|a, b| a.id.cmp(&b.id));
+
+    // Apply filters
+    let filtered: Vec<&Task> = sorted
+        .into_iter()
+        .filter(|t| {
+            if let Some(ref ctx) = context_id_filter {
+                if t.context_id.as_deref() != Some(ctx) {
+                    return false;
+                }
+            }
+            if let Some(ref status) = status_filter {
+                if &t.status.state != status {
+                    return false;
+                }
+            }
+            if let Some(ref after) = status_timestamp_after {
+                if let Some(ref ts) = t.status.timestamp {
+                    if ts.as_str() <= after.as_str() {
+                        return false;
+                    }
+                } else {
+                    // Tasks without a status timestamp are excluded when filter is active
+                    return false;
+                }
+            }
+            true
+        })
+        .collect();
+
+    // Apply cursor: skip tasks up to and including page_token
+    let after_cursor: Vec<&Task> = if let Some(ref token) = page_token {
+        let mut found = false;
+        filtered
+            .into_iter()
+            .filter(move |t| {
+                if found {
+                    return true;
+                }
+                if t.id == *token {
+                    found = true;
+                }
+                false
+            })
+            .collect()
+    } else {
+        filtered
+    };
+
+    // Take page_size + 1 to detect if there are more entries
+    let has_more = after_cursor.len() > page_size;
+    let page: Vec<&Task> = after_cursor.into_iter().take(page_size).collect();
+
+    let next_page_token = if has_more {
+        page.last().map(|t| t.id.clone())
+    } else {
+        None
+    };
+
+    // Build response tasks with optional trimming
+    let result_tasks: Vec<serde_json::Value> = page
+        .into_iter()
+        .map(|t| {
+            let mut task = t.clone();
+            if !include_artifacts {
+                task.artifacts = None;
+            }
+            if let Some(max_len) = history_length {
+                if let Some(ref mut history) = task.history {
+                    if history.len() > max_len {
+                        let start = history.len() - max_len;
+                        *history = history.split_off(start);
+                    }
+                }
+            }
+            serde_json::to_value(task).unwrap_or_default()
+        })
+        .collect();
+
+    let mut result = json!({
+        "tasks": result_tasks,
+        "pageSize": page_size,
+    });
+    if let Some(token) = next_page_token {
+        result["nextPageToken"] = json!(token);
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": req.id,
+            "result": result
+        })),
+    )
+}
+
+async fn handle_tasks_get_by_context(
+    task_store: &Arc<TaskStore>,
+    req: JsonRpcRequest,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let context_id = req
+        .params
+        .get("contextId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if context_id.is_empty() {
+        return (
+            StatusCode::OK,
+            Json(rpc_error(
+                req.id,
+                -32602,
+                "Invalid params: missing contextId",
+                Some(error_reason::INVALID_PARAMS),
+            )),
+        );
+    }
+
+    let tasks = task_store.tasks_by_context(context_id).await;
+    (
+        StatusCode::OK,
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": req.id,
+            "result": tasks
+        })),
+    )
 }
 
 // ── v1.0 REST-style endpoint handlers ───────────────────────
@@ -750,15 +1295,14 @@ fn unwrap_rpc_to_rest(
             -32002 => StatusCode::CONFLICT,         // Task already terminal
             _ => StatusCode::INTERNAL_SERVER_ERROR, // Server errors
         };
-        return (
-            http_status,
-            Json(json!({
-                "error": {
-                    "code": code,
-                    "message": error.get("message").cloned().unwrap_or(json!("Unknown error"))
-                }
-            })),
-        );
+        let mut rest_error = json!({
+            "code": code,
+            "message": error.get("message").cloned().unwrap_or(json!("Unknown error"))
+        });
+        if let Some(details) = error.get("details") {
+            rest_error["details"] = details.clone();
+        }
+        return (http_status, Json(json!({ "error": rest_error })));
     }
 
     (
@@ -851,6 +1395,97 @@ pub async fn handle_tasks_cancel_rest(
     unwrap_rpc_to_rest(status, body).into_response()
 }
 
+/// Query parameters for `GET /tasks`.
+#[derive(Debug, Deserialize)]
+pub struct ListTasksQuery {
+    pub context_id: Option<String>,
+    pub status: Option<String>,
+    pub page_size: Option<u64>,
+    pub page_token: Option<String>,
+    pub history_length: Option<u64>,
+    pub include_artifacts: Option<bool>,
+    pub status_timestamp_after: Option<String>,
+}
+
+/// `GET /tasks` — v1.0 REST binding for ListTasks.
+pub async fn handle_tasks_list_rest(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<ListTasksQuery>,
+) -> impl IntoResponse {
+    let (Some(_card), Some(task_store)) = (&state.a2a_agent_card, &state.a2a_task_store) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "A2A protocol not enabled"})),
+        )
+            .into_response();
+    };
+
+    if let Err(resp) = require_a2a_auth(&state, &headers) {
+        return resp.into_response();
+    }
+
+    let mut params = json!({});
+    if let Some(ctx) = query.context_id {
+        params["contextId"] = json!(ctx);
+    }
+    if let Some(status) = query.status {
+        params["status"] = json!(status);
+    }
+    if let Some(ps) = query.page_size {
+        params["pageSize"] = json!(ps);
+    }
+    if let Some(pt) = query.page_token {
+        params["pageToken"] = json!(pt);
+    }
+    if let Some(hl) = query.history_length {
+        params["historyLength"] = json!(hl);
+    }
+    if let Some(ia) = query.include_artifacts {
+        params["includeArtifacts"] = json!(ia);
+    }
+    if let Some(sta) = query.status_timestamp_after {
+        params["statusTimestampAfter"] = json!(sta);
+    }
+
+    let req = JsonRpcRequest {
+        jsonrpc: "2.0".into(),
+        id: json!(uuid::Uuid::new_v4().to_string()),
+        method: "tasks/list".into(),
+        params,
+    };
+    let (status, Json(body)) = handle_tasks_list(task_store, req).await;
+    unwrap_rpc_to_rest(status, body).into_response()
+}
+
+/// `GET /tasks/by-context/{context_id}` — v1.0 REST binding for tasks by context.
+pub async fn handle_tasks_by_context_rest(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(context_id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let (Some(_card), Some(task_store)) = (&state.a2a_agent_card, &state.a2a_task_store) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "A2A protocol not enabled"})),
+        )
+            .into_response();
+    };
+
+    if let Err(resp) = require_a2a_auth(&state, &headers) {
+        return resp.into_response();
+    }
+
+    let req = JsonRpcRequest {
+        jsonrpc: "2.0".into(),
+        id: json!(uuid::Uuid::new_v4().to_string()),
+        method: "tasks/getByContextId".into(),
+        params: json!({"contextId": context_id}),
+    };
+    let (status, Json(body)) = handle_tasks_get_by_context(task_store, req).await;
+    unwrap_rpc_to_rest(status, body).into_response()
+}
+
 // ── v1.0 SSE streaming endpoint ──────────────────────────────────
 
 /// `POST /message:stream` — v1.0 REST binding for `SendStreamingMessage`.
@@ -921,6 +1556,10 @@ pub async fn handle_message_stream_rest(
             },
         );
     }
+    task_store.index_context(&context_id, &task_id).await;
+
+    // Build conversation history from prior tasks in this context
+    let prompt_text = build_context_prompt(&task_store, &context_id, &task_id, &message_text).await;
 
     // ── Spawn background task that owns the agent lifecycle ────
     //
@@ -945,6 +1584,7 @@ pub async fn handle_message_stream_rest(
         let tid = tid.clone();
         let ctx = ctx.clone();
         let task_store = Arc::clone(&task_store);
+        let prompt_text = prompt_text.clone();
         let message_text = message_text.clone();
 
         async move {
@@ -1017,17 +1657,20 @@ pub async fn handle_message_stream_rest(
                     );
 
                     // Update task store — always runs even if client disconnected
-                    let mut tasks = task_store.tasks.write().await;
-                    if let Some(t) = tasks.get_mut(&tid) {
-                        t.status = fail_status;
+                    {
+                        let mut tasks = task_store.tasks.write().await;
+                        if let Some(t) = tasks.get_mut(&tid) {
+                            t.status = fail_status;
+                        }
                     }
+                    task_store.mark_terminal(&tid).await;
                     return;
                 }
             };
 
             // Stream the agent turn
             let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<TurnEvent>(64);
-            let msg_owned = message_text.clone();
+            let msg_owned = prompt_text.clone();
 
             // Accumulate text chunks for the final artifact
             let accumulated_text = Arc::new(RwLock::new(String::new()));
@@ -1215,6 +1858,9 @@ pub async fn handle_message_stream_rest(
                     t.artifacts = final_artifact.as_ref().map(|a| vec![a.clone()]);
                 }
             }
+            if final_state.is_terminal() {
+                task_store.mark_terminal(&tid).await;
+            }
 
             // Emit final status_update (best-effort — client may be gone)
             let final_event = TaskStatusUpdateEvent {
@@ -1239,8 +1885,7 @@ pub async fn handle_message_stream_rest(
     });
 
     // ── SSE stream reads from channel — disconnect-safe ─────────
-    let stream =
-        tokio_stream::wrappers::ReceiverStream::new(sse_rx).map(Ok::<_, Infallible>);
+    let stream = tokio_stream::wrappers::ReceiverStream::new(sse_rx).map(Ok::<_, Infallible>);
 
     Sse::new(stream)
         .keep_alive(KeepAlive::default())
@@ -1356,14 +2001,88 @@ async fn notify_telegram_chat(bot_token: &str, chat_id: i64, text: &str) {
         .await;
 }
 
-fn rpc_error(id: serde_json::Value, code: i32, message: &str) -> serde_json::Value {
+/// Build a prompt that prepends conversation history from prior tasks in the
+/// same `context_id`.  If there is no prior history the original message is
+/// returned unchanged.
+async fn build_context_prompt(
+    task_store: &TaskStore,
+    context_id: &str,
+    current_task_id: &str,
+    message_text: &str,
+) -> String {
+    let prior_tasks = task_store.tasks_by_context(context_id).await;
+    let prior: Vec<&Task> = prior_tasks
+        .iter()
+        .filter(|t| t.id != current_task_id)
+        .collect();
+    if prior.is_empty() {
+        return message_text.to_owned();
+    }
+
+    use std::fmt::Write;
+
+    let mut history = String::from("[Previous conversation in this context]\n");
+    for task in &prior {
+        // Append user messages from history
+        if let Some(msgs) = &task.history {
+            for msg in msgs {
+                let role_label = if msg.role.contains("USER") {
+                    "User"
+                } else {
+                    "Agent"
+                };
+                let text = extract_text_from_parts(&msg.parts);
+                if !text.is_empty() {
+                    let _ = writeln!(history, "{role_label}: {text}");
+                }
+            }
+        }
+        // Append agent response from status message
+        if let Some(ref msg) = task.status.message {
+            let text = extract_text_from_parts(&msg.parts);
+            if !text.is_empty() {
+                let _ = writeln!(history, "Agent: {text}");
+            }
+        }
+    }
+    let _ = write!(history, "[Current message]\nUser: {message_text}");
+    history
+}
+
+/// Extract concatenated text from message parts.
+fn extract_text_from_parts(parts: &[Part]) -> String {
+    parts
+        .iter()
+        .filter_map(|p| match p {
+            Part::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn rpc_error(
+    id: serde_json::Value,
+    code: i32,
+    message: &str,
+    reason: Option<&str>,
+) -> serde_json::Value {
+    let mut error = json!({
+        "code": code,
+        "message": message
+    });
+    if let Some(reason) = reason {
+        error["details"] = json!([{
+            "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+            "reason": reason,
+            "domain": "a2a-protocol.org",
+            "metadata": {}
+        }]);
+    }
     json!({
         "jsonrpc": "2.0",
         "id": id,
-        "error": {
-            "code": code,
-            "message": message
-        }
+        "error": error
     })
 }
 
@@ -1581,11 +2300,76 @@ mod tests {
 
     #[test]
     fn rpc_error_format() {
-        let err = rpc_error(json!(1), -32600, "Test error");
+        let err = rpc_error(json!(1), -32600, "Test error", Some("INVALID_REQUEST"));
         assert_eq!(err["jsonrpc"], "2.0");
         assert_eq!(err["id"], 1);
         assert_eq!(err["error"]["code"], -32600);
         assert_eq!(err["error"]["message"], "Test error");
+        // v1.0: details array is present when reason is provided
+        let details = err["error"]["details"].as_array().unwrap();
+        assert_eq!(details.len(), 1);
+        assert_eq!(details[0]["reason"], "INVALID_REQUEST");
+    }
+
+    #[test]
+    fn rpc_error_without_reason_has_no_details() {
+        let err = rpc_error(json!(1), -32600, "Test error", None);
+        assert_eq!(err["error"]["code"], -32600);
+        assert!(err["error"]["details"].is_null());
+    }
+
+    #[test]
+    fn error_includes_a2a_domain() {
+        let err = rpc_error(
+            json!(1),
+            -32001,
+            "Task not found",
+            Some(error_reason::TASK_NOT_FOUND),
+        );
+        let details = err["error"]["details"].as_array().unwrap();
+        assert_eq!(details[0]["domain"], "a2a-protocol.org");
+    }
+
+    #[test]
+    fn error_includes_error_info_type() {
+        let err = rpc_error(
+            json!(1),
+            -32602,
+            "Invalid params",
+            Some(error_reason::INVALID_PARAMS),
+        );
+        let details = err["error"]["details"].as_array().unwrap();
+        assert_eq!(
+            details[0]["@type"],
+            "type.googleapis.com/google.rpc.ErrorInfo"
+        );
+    }
+
+    #[test]
+    fn error_reason_codes_match_expected() {
+        let cases: Vec<(i32, &str, &str)> = vec![
+            (-32600, "Invalid request", error_reason::INVALID_REQUEST),
+            (-32601, "Method not found", error_reason::METHOD_NOT_FOUND),
+            (-32602, "Invalid params", error_reason::INVALID_PARAMS),
+            (-32000, "Unauthorized", error_reason::UNAUTHORIZED),
+            (-32001, "Task not found", error_reason::TASK_NOT_FOUND),
+            (-32002, "Task terminal", error_reason::TASK_ALREADY_TERMINAL),
+            (-32000, "Store full", error_reason::TASK_STORE_FULL),
+            (-32000, "Internal", error_reason::INTERNAL_ERROR),
+        ];
+        for (code, msg, reason) in cases {
+            let err = rpc_error(json!(1), code, msg, Some(reason));
+            let details = err["error"]["details"].as_array().unwrap();
+            assert_eq!(details[0]["reason"], reason, "reason mismatch for {msg}");
+            assert_eq!(
+                details[0]["domain"], "a2a-protocol.org",
+                "domain mismatch for {msg}"
+            );
+            assert_eq!(
+                details[0]["@type"], "type.googleapis.com/google.rpc.ErrorInfo",
+                "@type mismatch for {msg}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -2359,5 +3143,586 @@ mod tests {
         assert_eq!(json["artifact"]["artifactId"], "a-1");
         assert_eq!(json["artifact"]["parts"][0]["text"], "chunk");
         assert!(json["artifact"]["metadata"]["append"].as_bool().unwrap());
+    }
+
+    // ── ListTasks tests ─────────────────────────────────────────
+
+    fn make_task(id: &str, state: A2aTaskState, context_id: Option<&str>) -> Task {
+        Task {
+            id: id.to_string(),
+            status: TaskStatus {
+                state,
+                message: None,
+                timestamp: None,
+            },
+            context_id: context_id.map(String::from),
+            artifacts: Some(vec![Artifact {
+                artifact_id: format!("artifact-{id}"),
+                name: Some("response".into()),
+                description: None,
+                parts: vec![Part::Text {
+                    text: format!("result for {id}"),
+                    metadata: None,
+                }],
+                metadata: None,
+                extensions: None,
+            }]),
+            history: Some(vec![
+                Message {
+                    role: "ROLE_USER".into(),
+                    parts: vec![Part::Text {
+                        text: "hello".into(),
+                        metadata: None,
+                    }],
+                    message_id: "m1".into(),
+                    context_id: context_id.map(String::from),
+                    metadata: None,
+                },
+                Message {
+                    role: "ROLE_AGENT".into(),
+                    parts: vec![Part::Text {
+                        text: "world".into(),
+                        metadata: None,
+                    }],
+                    message_id: "m2".into(),
+                    context_id: context_id.map(String::from),
+                    metadata: None,
+                },
+            ]),
+            metadata: None,
+        }
+    }
+
+    fn list_rpc(params: serde_json::Value) -> JsonRpcRequest {
+        JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: json!(1),
+            method: "tasks/list".into(),
+            params,
+        }
+    }
+
+    #[tokio::test]
+    async fn tasks_list_returns_empty_for_no_tasks() {
+        let store = Arc::new(TaskStore::new());
+        let req = list_rpc(json!({}));
+        let (status, Json(body)) = handle_tasks_list(&store, req).await;
+        assert_eq!(status, StatusCode::OK);
+        let result = &body["result"];
+        assert_eq!(result["tasks"].as_array().unwrap().len(), 0);
+        assert_eq!(result["pageSize"], 50);
+        assert!(result.get("nextPageToken").is_none() || result["nextPageToken"].is_null());
+    }
+
+    #[tokio::test]
+    async fn tasks_list_returns_all_tasks() {
+        let store = Arc::new(TaskStore::new());
+        {
+            let mut tasks = store.tasks.write().await;
+            tasks.insert("a".into(), make_task("a", A2aTaskState::Completed, None));
+            tasks.insert("b".into(), make_task("b", A2aTaskState::Working, None));
+            tasks.insert("c".into(), make_task("c", A2aTaskState::Failed, None));
+        }
+        let req = list_rpc(json!({"includeArtifacts": true}));
+        let (status, Json(body)) = handle_tasks_list(&store, req).await;
+        assert_eq!(status, StatusCode::OK);
+        let tasks = body["result"]["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 3);
+        // Sorted by ID
+        assert_eq!(tasks[0]["id"], "a");
+        assert_eq!(tasks[1]["id"], "b");
+        assert_eq!(tasks[2]["id"], "c");
+    }
+
+    #[tokio::test]
+    async fn tasks_list_filters_by_context_id() {
+        let store = Arc::new(TaskStore::new());
+        {
+            let mut tasks = store.tasks.write().await;
+            tasks.insert(
+                "a".into(),
+                make_task("a", A2aTaskState::Completed, Some("ctx-1")),
+            );
+            tasks.insert(
+                "b".into(),
+                make_task("b", A2aTaskState::Completed, Some("ctx-2")),
+            );
+            tasks.insert(
+                "c".into(),
+                make_task("c", A2aTaskState::Working, Some("ctx-1")),
+            );
+        }
+        let req = list_rpc(json!({"contextId": "ctx-1", "includeArtifacts": true}));
+        let (_, Json(body)) = handle_tasks_list(&store, req).await;
+        let tasks = body["result"]["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 2);
+        assert!(tasks.iter().all(|t| t["contextId"] == "ctx-1"));
+    }
+
+    #[tokio::test]
+    async fn tasks_list_filters_by_status() {
+        let store = Arc::new(TaskStore::new());
+        {
+            let mut tasks = store.tasks.write().await;
+            tasks.insert("a".into(), make_task("a", A2aTaskState::Completed, None));
+            tasks.insert("b".into(), make_task("b", A2aTaskState::Working, None));
+            tasks.insert("c".into(), make_task("c", A2aTaskState::Completed, None));
+        }
+        let req = list_rpc(json!({"status": "TASK_STATE_COMPLETED", "includeArtifacts": true}));
+        let (_, Json(body)) = handle_tasks_list(&store, req).await;
+        let tasks = body["result"]["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 2);
+        assert!(
+            tasks
+                .iter()
+                .all(|t| t["status"]["state"] == "TASK_STATE_COMPLETED")
+        );
+    }
+
+    #[tokio::test]
+    async fn tasks_list_paginates_correctly() {
+        let store = Arc::new(TaskStore::new());
+        {
+            let mut tasks = store.tasks.write().await;
+            for i in 0..5 {
+                let id = format!("task-{i:03}");
+                tasks.insert(id.clone(), make_task(&id, A2aTaskState::Completed, None));
+            }
+        }
+
+        // First page of 2
+        let req = list_rpc(json!({"pageSize": 2}));
+        let (_, Json(body)) = handle_tasks_list(&store, req).await;
+        let result = &body["result"];
+        let tasks = result["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0]["id"], "task-000");
+        assert_eq!(tasks[1]["id"], "task-001");
+        let next_token = result["nextPageToken"].as_str().unwrap();
+        assert_eq!(next_token, "task-001");
+
+        // Second page using cursor
+        let req = list_rpc(json!({"pageSize": 2, "pageToken": next_token}));
+        let (_, Json(body)) = handle_tasks_list(&store, req).await;
+        let result = &body["result"];
+        let tasks = result["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0]["id"], "task-002");
+        assert_eq!(tasks[1]["id"], "task-003");
+        let next_token = result["nextPageToken"].as_str().unwrap();
+        assert_eq!(next_token, "task-003");
+
+        // Third page — only 1 remaining
+        let req = list_rpc(json!({"pageSize": 2, "pageToken": next_token}));
+        let (_, Json(body)) = handle_tasks_list(&store, req).await;
+        let result = &body["result"];
+        let tasks = result["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0]["id"], "task-004");
+        assert!(result.get("nextPageToken").is_none() || result["nextPageToken"].is_null());
+    }
+
+    #[tokio::test]
+    async fn tasks_list_respects_page_size() {
+        let store = Arc::new(TaskStore::new());
+        {
+            let mut tasks = store.tasks.write().await;
+            for i in 0..10 {
+                let id = format!("t-{i:02}");
+                tasks.insert(id.clone(), make_task(&id, A2aTaskState::Completed, None));
+            }
+        }
+
+        // page_size=3 should return exactly 3
+        let req = list_rpc(json!({"pageSize": 3}));
+        let (_, Json(body)) = handle_tasks_list(&store, req).await;
+        let tasks = body["result"]["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 3);
+        assert_eq!(body["result"]["pageSize"], 3);
+
+        // page_size clamped to max 100
+        let req = list_rpc(json!({"pageSize": 200}));
+        let (_, Json(body)) = handle_tasks_list(&store, req).await;
+        let tasks = body["result"]["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 10); // only 10 tasks exist
+        assert_eq!(body["result"]["pageSize"], 100);
+    }
+
+    #[tokio::test]
+    async fn tasks_list_strips_artifacts_by_default() {
+        let store = Arc::new(TaskStore::new());
+        {
+            let mut tasks = store.tasks.write().await;
+            tasks.insert("a".into(), make_task("a", A2aTaskState::Completed, None));
+        }
+        // Default: include_artifacts=false
+        let req = list_rpc(json!({}));
+        let (_, Json(body)) = handle_tasks_list(&store, req).await;
+        let tasks = body["result"]["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 1);
+        // Artifacts should be stripped (null or absent)
+        assert!(tasks[0].get("artifacts").is_none() || tasks[0]["artifacts"].is_null());
+    }
+
+    #[tokio::test]
+    async fn tasks_list_includes_artifacts_when_requested() {
+        let store = Arc::new(TaskStore::new());
+        {
+            let mut tasks = store.tasks.write().await;
+            tasks.insert("a".into(), make_task("a", A2aTaskState::Completed, None));
+        }
+        let req = list_rpc(json!({"includeArtifacts": true}));
+        let (_, Json(body)) = handle_tasks_list(&store, req).await;
+        let tasks = body["result"]["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert!(tasks[0]["artifacts"].is_array());
+        assert_eq!(tasks[0]["artifacts"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn tasks_list_via_rpc_dispatch() {
+        let state = a2a_test_state(None, false, &[]);
+        let task_store = state.a2a_task_store.as_ref().unwrap();
+        {
+            let mut tasks = task_store.tasks.write().await;
+            tasks.insert("x".into(), make_task("x", A2aTaskState::Working, None));
+        }
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: json!(1),
+            method: "tasks/list".into(),
+            params: json!({}),
+        };
+        let resp = handle_a2a_rpc(State(state), HeaderMap::new(), Json(req))
+            .await
+            .into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(body["result"]["tasks"].as_array().unwrap().len(), 1);
+    }
+
+    // ── context_id multi-turn conversation tests ──────────────
+
+    #[tokio::test]
+    async fn context_index_tracks_tasks() {
+        let store = TaskStore::new();
+
+        // Insert two tasks with the same context_id
+        {
+            let mut tasks = store.tasks.write().await;
+            tasks.insert(
+                "t1".into(),
+                Task {
+                    id: "t1".into(),
+                    status: TaskStatus {
+                        state: A2aTaskState::Completed,
+                        message: None,
+                        timestamp: None,
+                    },
+                    context_id: Some("ctx-shared".into()),
+                    artifacts: None,
+                    history: None,
+                    metadata: None,
+                },
+            );
+            tasks.insert(
+                "t2".into(),
+                Task {
+                    id: "t2".into(),
+                    status: TaskStatus {
+                        state: A2aTaskState::Working,
+                        message: None,
+                        timestamp: None,
+                    },
+                    context_id: Some("ctx-shared".into()),
+                    artifacts: None,
+                    history: None,
+                    metadata: None,
+                },
+            );
+            tasks.insert(
+                "t3".into(),
+                Task {
+                    id: "t3".into(),
+                    status: TaskStatus {
+                        state: A2aTaskState::Completed,
+                        message: None,
+                        timestamp: None,
+                    },
+                    context_id: Some("ctx-other".into()),
+                    artifacts: None,
+                    history: None,
+                    metadata: None,
+                },
+            );
+        }
+        store.index_context("ctx-shared", "t1").await;
+        store.index_context("ctx-shared", "t2").await;
+        store.index_context("ctx-other", "t3").await;
+
+        let idx = store.context_index.read().await;
+        assert_eq!(idx.get("ctx-shared").unwrap().len(), 2);
+        assert_eq!(idx.get("ctx-other").unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn tasks_by_context_returns_correct_tasks() {
+        let store = TaskStore::new();
+        {
+            let mut tasks = store.tasks.write().await;
+            for id in &["a1", "a2", "b1"] {
+                let ctx = if id.starts_with('a') {
+                    "ctx-a"
+                } else {
+                    "ctx-b"
+                };
+                tasks.insert(
+                    id.to_string(),
+                    Task {
+                        id: id.to_string(),
+                        status: TaskStatus {
+                            state: A2aTaskState::Completed,
+                            message: None,
+                            timestamp: None,
+                        },
+                        context_id: Some(ctx.into()),
+                        artifacts: None,
+                        history: None,
+                        metadata: None,
+                    },
+                );
+            }
+        }
+        store.index_context("ctx-a", "a1").await;
+        store.index_context("ctx-a", "a2").await;
+        store.index_context("ctx-b", "b1").await;
+
+        let ctx_a_tasks = store.tasks_by_context("ctx-a").await;
+        assert_eq!(ctx_a_tasks.len(), 2);
+        let ids: Vec<&str> = ctx_a_tasks.iter().map(|t| t.id.as_str()).collect();
+        assert!(ids.contains(&"a1"));
+        assert!(ids.contains(&"a2"));
+
+        let ctx_b_tasks = store.tasks_by_context("ctx-b").await;
+        assert_eq!(ctx_b_tasks.len(), 1);
+        assert_eq!(ctx_b_tasks[0].id, "b1");
+
+        let empty = store.tasks_by_context("nonexistent").await;
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn context_id_generates_consistent_session_key() {
+        let ctx = "my-context-123";
+        let session1 = format!("a2a-ctx-{ctx}");
+        let session2 = format!("a2a-ctx-{ctx}");
+        assert_eq!(session1, session2);
+        assert_eq!(session1, "a2a-ctx-my-context-123");
+
+        // Different context IDs produce different session keys
+        let other = format!("a2a-ctx-{}", "other-ctx");
+        assert_ne!(session1, other);
+    }
+
+    // ── Eviction tests ──────────────────────────────────────────
+
+    fn insert_task(store: &TaskStore, id: &str, state: A2aTaskState) {
+        // Use try_write (sync) for test convenience — store is uncontested.
+        let mut tasks = store.tasks.try_write().unwrap();
+        tasks.insert(
+            id.to_string(),
+            Task {
+                id: id.to_string(),
+                status: TaskStatus {
+                    state,
+                    message: None,
+                    timestamp: None,
+                },
+                context_id: None,
+                artifacts: None,
+                history: None,
+                metadata: None,
+            },
+        );
+    }
+
+    #[tokio::test]
+    async fn mark_terminal_records_timestamp() {
+        let store = TaskStore::new();
+        insert_task(&store, "t1", A2aTaskState::Completed);
+        store.mark_terminal("t1").await;
+
+        let ts = store.timestamps.read().await;
+        assert!(ts.contains_key("t1"));
+    }
+
+    #[tokio::test]
+    async fn eviction_removes_expired_terminal_tasks() {
+        let store = TaskStore::new();
+        insert_task(&store, "t1", A2aTaskState::Completed);
+        insert_task(&store, "t2", A2aTaskState::Failed);
+
+        // Manually insert timestamps in the past
+        {
+            let mut ts = store.timestamps.write().await;
+            let past = std::time::Instant::now()
+                .checked_sub(Duration::from_secs(120))
+                .unwrap();
+            ts.insert("t1".to_string(), past);
+            ts.insert("t2".to_string(), past);
+        }
+
+        let evicted = store.evict_expired(Duration::from_secs(60)).await;
+        assert_eq!(evicted, 2);
+
+        let tasks = store.tasks.read().await;
+        assert!(!tasks.contains_key("t1"));
+        assert!(!tasks.contains_key("t2"));
+    }
+
+    #[tokio::test]
+    async fn eviction_preserves_non_terminal_tasks() {
+        let store = TaskStore::new();
+        insert_task(&store, "working", A2aTaskState::Working);
+        insert_task(&store, "submitted", A2aTaskState::Submitted);
+        // Non-terminal tasks have no timestamp entry, so they survive eviction.
+
+        let evicted = store.evict_expired(Duration::from_secs(0)).await;
+        assert_eq!(evicted, 0);
+
+        let tasks = store.tasks.read().await;
+        assert!(tasks.contains_key("working"));
+        assert!(tasks.contains_key("submitted"));
+    }
+
+    #[tokio::test]
+    async fn eviction_preserves_recent_terminal_tasks() {
+        let store = TaskStore::new();
+        insert_task(&store, "recent", A2aTaskState::Completed);
+        store.mark_terminal("recent").await;
+
+        // TTL of 1 hour — the task was just marked terminal, so it should survive.
+        let evicted = store.evict_expired(Duration::from_secs(3600)).await;
+        assert_eq!(evicted, 0);
+
+        let tasks = store.tasks.read().await;
+        assert!(tasks.contains_key("recent"));
+    }
+
+    #[tokio::test]
+    async fn return_immediately_returns_submitted_state() {
+        let state = a2a_test_state(None, false, &[]);
+        let task_store = state.a2a_task_store.as_ref().unwrap();
+
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: json!(99),
+            method: "message/send".into(),
+            params: json!({
+                "message": {
+                    "role": "ROLE_USER",
+                    "messageId": "m-1",
+                    "parts": [{"text": "hello"}],
+                },
+                "configuration": {
+                    "returnImmediately": true
+                }
+            }),
+        };
+
+        let (status, Json(body)) = Box::pin(handle_message_send(&state, task_store, req)).await;
+        assert_eq!(status, StatusCode::OK);
+        // Task should be in Submitted state (processing hasn't completed yet).
+        assert_eq!(
+            body["result"]["status"]["state"], "TASK_STATE_SUBMITTED",
+            "return_immediately should return Submitted state"
+        );
+        assert!(body["result"]["id"].is_string());
+    }
+
+    #[tokio::test]
+    async fn return_immediately_eventually_reaches_terminal() {
+        let state = a2a_test_state(None, false, &[]);
+        let task_store = state.a2a_task_store.as_ref().unwrap();
+
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: json!(100),
+            method: "message/send".into(),
+            params: json!({
+                "message": {
+                    "role": "ROLE_USER",
+                    "messageId": "m-2",
+                    "parts": [{"text": "background task"}],
+                },
+                "configuration": {
+                    "returnImmediately": true
+                }
+            }),
+        };
+
+        let (status, Json(body)) = Box::pin(handle_message_send(&state, task_store, req)).await;
+        assert_eq!(status, StatusCode::OK);
+        let task_id = body["result"]["id"].as_str().unwrap().to_string();
+
+        // Wait for background processing to reach a terminal state.
+        // In tests, process_message uses a default config without a real provider,
+        // so the task will reach Failed (not Completed) — either terminal state
+        // proves the background spawn ran to completion.
+        for _ in 0..40 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let tasks = task_store.tasks.read().await;
+            if let Some(t) = tasks.get(&task_id) {
+                if t.status.state.is_terminal() {
+                    return; // Success — background task reached terminal state.
+                }
+            }
+        }
+        panic!("background task did not reach terminal state within 2 seconds");
+    }
+
+    #[tokio::test]
+    async fn eviction_cleans_context_index() {
+        let store = TaskStore::new();
+        // Insert with context_id so eviction can find it
+        {
+            let mut tasks = store.tasks.try_write().unwrap();
+            tasks.insert(
+                "t1".to_string(),
+                Task {
+                    id: "t1".into(),
+                    status: TaskStatus {
+                        state: A2aTaskState::Completed,
+                        message: None,
+                        timestamp: None,
+                    },
+                    context_id: Some("ctx-1".into()),
+                    artifacts: None,
+                    history: None,
+                    metadata: None,
+                },
+            );
+        }
+        store.index_context("ctx-1", "t1").await;
+
+        // Set timestamp in the past for eviction
+        {
+            let mut ts = store.timestamps.write().await;
+            let past = std::time::Instant::now()
+                .checked_sub(Duration::from_secs(120))
+                .unwrap();
+            ts.insert("t1".to_string(), past);
+        }
+
+        let evicted = store.evict_expired(Duration::from_secs(60)).await;
+        assert_eq!(evicted, 1);
+
+        // context_index entry should have been cleaned up
+        let idx = store.context_index.read().await;
+        assert!(
+            !idx.contains_key("ctx-1"),
+            "empty context should be removed from index"
+        );
     }
 }

@@ -3779,7 +3779,7 @@ impl Default for OpenCodeCliConfig {
 // ── A2A (Agent-to-Agent) protocol ────────────────────────────────
 
 /// A2A (Agent-to-Agent) protocol configuration (`[a2a]`).
-#[derive(Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
 pub struct A2aConfig {
     /// Enable the A2A protocol server and client tool.
     #[serde(default)]
@@ -3812,6 +3812,16 @@ pub struct A2aConfig {
     /// When set, inbound A2A task results are also posted to this chat.
     #[serde(default)]
     pub notify_chat_id: Option<i64>,
+    /// Maximum request body size in bytes for A2A endpoints (default: 10MB).
+    /// Increased from the gateway default to support binary parts.
+    #[serde(default = "default_a2a_body_limit")]
+    pub body_limit_bytes: usize,
+    /// TTL in seconds for terminal tasks before eviction (default: 3600 = 1 hour).
+    #[serde(default = "default_a2a_task_ttl")]
+    pub task_ttl_secs: u64,
+    /// Eviction check interval in seconds (default: 300 = 5 minutes).
+    #[serde(default = "default_a2a_eviction_interval")]
+    pub eviction_interval_secs: u64,
 }
 
 impl std::fmt::Debug for A2aConfig {
@@ -3827,8 +3837,41 @@ impl std::fmt::Debug for A2aConfig {
             .field("provider_url", &self.provider_url)
             .field("capabilities", &self.capabilities)
             .field("notify_chat_id", &self.notify_chat_id)
+            .field("body_limit_bytes", &self.body_limit_bytes)
+            .field("task_ttl_secs", &self.task_ttl_secs)
+            .field("eviction_interval_secs", &self.eviction_interval_secs)
             .finish()
     }
+}
+
+impl Default for A2aConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            agent_name: None,
+            description: None,
+            public_url: None,
+            bearer_token: None,
+            version: None,
+            protocol_version: None,
+            provider_url: None,
+            capabilities: Vec::new(),
+            notify_chat_id: None,
+            body_limit_bytes: default_a2a_body_limit(),
+            task_ttl_secs: default_a2a_task_ttl(),
+            eviction_interval_secs: default_a2a_eviction_interval(),
+        }
+    }
+}
+
+fn default_a2a_body_limit() -> usize {
+    10 * 1024 * 1024
+} // 10MB
+fn default_a2a_task_ttl() -> u64 {
+    3600
+}
+fn default_a2a_eviction_interval() -> u64 {
+    300
 }
 
 // ── Proxy ───────────────────────────────────────────────────────

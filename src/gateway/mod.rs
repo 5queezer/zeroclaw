@@ -39,6 +39,7 @@ use crate::tools::canvas::CanvasStore;
 use crate::tools::traits::ToolSpec;
 use crate::util::truncate_with_ellipsis;
 use anyhow::{Context, Result};
+use axum::extract::DefaultBodyLimit;
 use axum::{
     Router,
     body::Bytes,
@@ -52,7 +53,6 @@ use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
 use uuid::Uuid;
 
@@ -858,7 +858,17 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
 
         let card = a2a::generate_agent_card(&config);
         tracing::info!("A2A protocol enabled — agent card generated");
-        (Some(Arc::new(card)), Some(Arc::new(a2a::TaskStore::new())))
+        let task_store = Arc::new(a2a::TaskStore::new());
+
+        // Start background eviction for terminal tasks
+        a2a::spawn_eviction_task(
+            Arc::clone(&task_store),
+            config.a2a.task_ttl_secs,
+            config.a2a.eviction_interval_secs,
+            shutdown_tx.subscribe(),
+        );
+
+        (Some(Arc::new(card)), Some(task_store))
     } else {
         (None, None)
     };
@@ -927,7 +937,29 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
     // Config PUT needs larger body limit (1MB)
     let config_put_router = Router::new()
         .route("/api/config", put(api::handle_api_config_put))
-        .layer(RequestBodyLimitLayer::new(1_048_576));
+        .layer(DefaultBodyLimit::max(1_048_576));
+
+    // A2A routes need a larger body limit (configurable, default 10MB) to
+    // support binary message parts.  Only built when A2A is enabled.
+    let a2a_router = if config.a2a.enabled {
+        Some(
+            Router::new()
+                .route("/.well-known/agent-card.json", get(a2a::handle_agent_card))
+                .route("/message:send", post(a2a::handle_message_send_rest))
+                .route("/message:stream", post(a2a::handle_message_stream_rest))
+                .route("/tasks", get(a2a::handle_tasks_list_rest))
+                .route("/tasks/{id}", get(a2a::handle_tasks_get_rest))
+                .route("/tasks/{id}:cancel", post(a2a::handle_tasks_cancel_rest))
+                .route(
+                    "/tasks/by-context/{context_id}",
+                    get(a2a::handle_tasks_by_context_rest),
+                )
+                .route("/a2a", post(a2a::handle_a2a_rpc))
+                .layer(DefaultBodyLimit::max(config.a2a.body_limit_bytes)),
+        )
+    } else {
+        None
+    };
 
     // Build router with middleware
     let inner = Router::new()
@@ -1008,19 +1040,14 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         .route(
             "/api/canvas/{id}/history",
             get(canvas::handle_canvas_history),
-        )
-        // ── A2A (Agent-to-Agent) protocol routes ──
-        .route(
-            "/.well-known/agent-card.json",
-            get(a2a::handle_agent_card),
-        )
-        // v1.0 REST-style path bindings
-        .route("/message:send", post(a2a::handle_message_send_rest))
-        .route("/message:stream", post(a2a::handle_message_stream_rest))
-        .route("/tasks/{id}", get(a2a::handle_tasks_get_rest))
-        .route("/tasks/{id}:cancel", post(a2a::handle_tasks_cancel_rest))
-        // v0.3 backward-compatibility (unified JSON-RPC endpoint)
-        .route("/a2a", post(a2a::handle_a2a_rpc));
+        );
+
+    // ── A2A (Agent-to-Agent) protocol routes (with custom body limit) ──
+    let inner = if let Some(a2a_router) = a2a_router {
+        inner.merge(a2a_router)
+    } else {
+        inner
+    };
 
     // ── WebAuthn hardware key authentication API (requires webauthn feature) ──
     #[cfg(feature = "webauthn")]
@@ -1073,7 +1100,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         // ── SPA fallback: non-API GET requests serve index.html ──
         .fallback(get(static_files::handle_spa_fallback))
         .with_state(state)
-        .layer(RequestBodyLimitLayer::new(MAX_BODY_SIZE))
+        .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(gateway_request_timeout_secs()),
