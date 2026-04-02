@@ -207,10 +207,12 @@ Native Agent-to-Agent communication per the open [A2A standard](https://github.c
 [a2a]
 enabled = true
 bearer_token = "your-secret"
-# public_url = "https://agent.example.com"  # auto-derived from gateway if omitted
+# agent_name = "my-agent"        # defaults to config agent name
+# public_url = "https://my-agent.example.com"  # auto-derived from gateway if omitted
+# capabilities = ["research", "coding"]
 ```
 
-Inbound tasks route through the existing agent pipeline. The agent card is auto-generated from your configuration.
+Inbound tasks route through the gateway server and the existing agent pipeline (A2A uses the same gateway port; no separate bind). The agent card is auto-generated from your configuration.
 
 ## Roadmap
 
