@@ -118,6 +118,7 @@ pub fn should_skip_autosave_content(content: &str) -> bool {
     lowered.starts_with("[cron:")
         || lowered.starts_with("[heartbeat task")
         || lowered.starts_with("[distilled_")
+        || lowered.starts_with("[memory context]")
         || lowered.contains("distilled_index_sig:")
 }
 
@@ -485,6 +486,9 @@ mod tests {
         ));
         assert!(should_skip_autosave_content(
             "[Heartbeat Task | high] Execute scheduled patrol"
+        ));
+        assert!(should_skip_autosave_content(
+            "[Memory context]\n- entry1\n- entry2"
         ));
         assert!(!should_skip_autosave_content(
             "User prefers concise answers."
