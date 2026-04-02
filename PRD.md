@@ -313,7 +313,7 @@ A security audit of the inherited ZeroClaw codebase identified 7 issue groups, t
 
 ## Resolved decisions
 
-1. **Name:** Hrafn (altnordisch fuer Rabe). Crates.io und GitHub verfuegbar.
+1. **Name:** Hrafn (Old Norse for 'raven'). Available on Crates.io and GitHub.
 2. **Logo:** Geometric line-art raven in blue.
 3. **Domain:** GitHub-only until M4. Evaluate hrafn.dev if traction warrants it.
 4. **License:** Apache-2.0 (inherited, no change).
