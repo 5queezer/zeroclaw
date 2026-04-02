@@ -111,15 +111,18 @@ pub fn prune_history(messages: &mut Vec<ChatMessage>, config: &HistoryPrunerConf
         while i < messages.len() {
             let protected = protected_indices(messages, config.keep_recent);
             if messages[i].role == "assistant" && !protected[i] {
-                // Count consecutive tool messages following this assistant
+                // Count the full consecutive tool run first, then check
+                // whether every message in the group is unprotected.
+                // Collapsing only an unprotected prefix would orphan
+                // protected tool messages that follow.
                 let mut tool_count = 0;
                 while i + 1 + tool_count < messages.len()
                     && messages[i + 1 + tool_count].role == "tool"
-                    && !protected[i + 1 + tool_count]
                 {
                     tool_count += 1;
                 }
-                if tool_count > 0 {
+                let all_unprotected = (0..tool_count).all(|k| !protected[i + 1 + k]);
+                if tool_count > 0 && all_unprotected {
                     let summary =
                         format!("[Tool exchange: {tool_count} tool call(s) — results collapsed]");
                     messages[i] = ChatMessage {
@@ -151,7 +154,9 @@ pub fn prune_history(messages: &mut Vec<ChatMessage>, config: &HistoryPrunerConf
                 continue;
             }
             if messages[i].role == "assistant" {
-                // Count following tool messages — drop as atomic group
+                // Count full following tool run, then verify the entire
+                // group (assistant + all tools) is unprotected before
+                // dropping. Dropping only part would orphan tool messages.
                 let mut tool_count = 0;
                 while i + 1 + tool_count < messages.len()
                     && messages[i + 1 + tool_count].role == "tool"
@@ -159,12 +164,18 @@ pub fn prune_history(messages: &mut Vec<ChatMessage>, config: &HistoryPrunerConf
                     tool_count += 1;
                 }
                 if tool_count > 0 {
-                    for _ in 0..=tool_count {
-                        messages.remove(i);
+                    let group_all_unprotected = (0..tool_count).all(|k| !protected[i + 1 + k]);
+                    if group_all_unprotected {
+                        for _ in 0..=tool_count {
+                            messages.remove(i);
+                        }
+                        dropped_messages += 1 + tool_count;
+                        dropped_any = true;
+                        break;
                     }
-                    dropped_messages += 1 + tool_count;
-                    dropped_any = true;
-                    break;
+                    // Group crosses protection boundary — skip it
+                    i += 1 + tool_count;
+                    continue;
                 }
             }
             // Non-tool-group message — safe to drop individually
@@ -367,8 +378,9 @@ mod tests {
         for (i, m) in messages.iter().enumerate() {
             if m.role == "tool" {
                 assert!(
-                    i > 0 && messages[i - 1].role == "assistant",
-                    "tool message at index {i} has no preceding assistant"
+                    i > 0
+                        && (messages[i - 1].role == "assistant" || messages[i - 1].role == "tool"),
+                    "tool message at index {i} has no preceding assistant or tool"
                 );
             }
         }
@@ -397,11 +409,12 @@ mod tests {
             collapse_tool_results: true,
         };
         prune_history(&mut messages, &config);
-        // Verify invariant: no tool message without a preceding assistant
+        // Verify invariant: no tool message without a preceding assistant or tool
         for (i, m) in messages.iter().enumerate() {
             if m.role == "tool" {
                 assert!(
-                    i > 0 && messages[i - 1].role == "assistant",
+                    i > 0
+                        && (messages[i - 1].role == "assistant" || messages[i - 1].role == "tool"),
                     "orphaned tool message at index {i}: {:?}",
                     messages.iter().map(|m| &m.role).collect::<Vec<_>>()
                 );
@@ -468,7 +481,8 @@ mod tests {
         for (i, m) in messages.iter().enumerate() {
             if m.role == "tool" {
                 assert!(
-                    i > 0 && messages[i - 1].role == "assistant",
+                    i > 0
+                        && (messages[i - 1].role == "assistant" || messages[i - 1].role == "tool"),
                     "orphaned tool at index {i}: roles = {:?}",
                     messages.iter().map(|m| &m.role).collect::<Vec<_>>()
                 );

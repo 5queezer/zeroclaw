@@ -1399,6 +1399,46 @@ fn parse_tool_calls(response: &str) -> (String, Vec<ParsedToolCall>) {
         }
     }
 
+    // --- JSONL recovery pass ---
+    // Safety: by the time parse_tool_calls runs, `response` is a complete
+    // string (not a streaming chunk). The Gemini/OpenRouter JSONL format
+    // emits one JSON object per line by definition. If a response were
+    // pretty-printed across lines, the per-line parse would fail harmlessly
+    // and fall through to the XML/other parsers below.
+    //
+    // Gemini via OpenRouter sometimes returns multiple JSON objects separated by
+    // newlines (JSONL) — e.g. one line with tool_calls and a follow-up line with
+    // tool_code. Only match lines that carry both "content" and "tool_calls" keys
+    // (the Gemini envelope shape) to avoid accidentally treating arbitrary JSON
+    // in tool output or user messages as tool calls.
+    {
+        let mut jsonl_calls = Vec::new();
+        let mut jsonl_text_parts = Vec::new();
+        for line in response.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(line) {
+                if json_value.get("content").is_none() || json_value.get("tool_calls").is_none() {
+                    continue;
+                }
+                let line_calls = parse_tool_calls_from_json_value(&json_value);
+                if !line_calls.is_empty() {
+                    if let Some(content) = json_value.get("content").and_then(|v| v.as_str()) {
+                        if !content.trim().is_empty() {
+                            jsonl_text_parts.push(content.trim().to_string());
+                        }
+                    }
+                    jsonl_calls.extend(line_calls);
+                }
+            }
+        }
+        if !jsonl_calls.is_empty() {
+            return (jsonl_text_parts.join("\n"), jsonl_calls);
+        }
+    }
+
     if let Some((minimax_text, minimax_calls)) = parse_minimax_invoke_calls(response) {
         if !minimax_calls.is_empty() {
             return (minimax_text, minimax_calls);
@@ -3480,6 +3520,7 @@ pub async fn run(
     let security = Arc::new(SecurityPolicy::from_config(
         &config.autonomy,
         &config.workspace_dir,
+        config.security.enabled,
     ));
 
     // ── Memory (the brain) ────────────────────────────────────────
@@ -4463,6 +4504,7 @@ pub async fn process_message(
     let security = Arc::new(SecurityPolicy::from_config(
         &config.autonomy,
         &config.workspace_dir,
+        config.security.enabled,
     ));
     let approval_manager = ApprovalManager::for_non_interactive(&config.autonomy);
     let mem: Arc<dyn Memory> = Arc::from(memory::create_memory_with_storage_and_routes(
@@ -7825,6 +7867,38 @@ Tail"#;
     }
 
     #[test]
+    fn parse_tool_calls_handles_gemini_jsonl_multi_object() {
+        // Gemini via OpenRouter sometimes returns multiple JSON objects on separate
+        // lines: the first carries real tool_calls, the second has tool_code noise.
+        let response = concat!(
+            "{\"content\":\"Of course!\",\"tool_calls\":[{\"arguments\":\"{\\\"job_id\\\":\\\"abc123\\\"}\",\"id\":\"tool_cron_remove_x\",\"name\":\"cron_remove\"}]}\n",
+            "{\"content\":\"Done.\",\"tool_code\":\"print(default_api.cron_list())\"}"
+        );
+
+        let (text, calls) = parse_tool_calls(response);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "cron_remove");
+        assert!(text.contains("Of course!"));
+        // Second line has no tool_calls key, so its content is not included
+        assert!(!text.contains("Done."));
+    }
+
+    #[test]
+    fn parse_tool_calls_handles_gemini_jsonl_two_tool_call_lines() {
+        // Both lines carry tool_calls
+        let response = concat!(
+            "{\"content\":\"\",\"tool_calls\":[{\"arguments\":\"{}\",\"id\":\"c1\",\"name\":\"tool_a\"}]}\n",
+            "{\"content\":\"text2\",\"tool_calls\":[{\"arguments\":\"{}\",\"id\":\"c2\",\"name\":\"tool_b\"}]}"
+        );
+
+        let (text, calls) = parse_tool_calls(response);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].name, "tool_a");
+        assert_eq!(calls[1].name, "tool_b");
+        assert!(text.contains("text2"));
+    }
+
+    #[test]
     fn parse_tool_calls_handles_perl_style_tool_call_blocks() {
         let response = r#"TOOL_CALL
 {tool => "shell", args => { --command "uname -a" }}}
@@ -7947,6 +8021,7 @@ Tail"#;
         let security = Arc::new(SecurityPolicy::from_config(
             &crate::config::AutonomyConfig::default(),
             std::path::Path::new("/tmp"),
+            true,
         ));
         let tools = tools::default_tools(security);
         let instructions = build_tool_instructions(&tools, None);
@@ -7964,6 +8039,7 @@ Tail"#;
         let security = Arc::new(SecurityPolicy::from_config(
             &crate::config::AutonomyConfig::default(),
             std::path::Path::new("/tmp"),
+            true,
         ));
         let tools = tools::default_tools(security);
         let formatted = tools_to_openai_format(&tools);

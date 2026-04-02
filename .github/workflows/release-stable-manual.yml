@@ -260,6 +260,10 @@ jobs:
         if: matrix.ndk
         run: echo "$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
 
+      - name: Install cross
+        if: matrix.use_cross
+        run: cargo install cross --locked
+
       - name: Build release
         shell: bash
         run: |
@@ -275,7 +279,6 @@ jobs:
           fi
           BUILD_CMD="cargo"
           if [ "${{ matrix.use_cross || 'false' }}" = "true" ]; then
-            cargo install cross --locked
             BUILD_CMD="cross"
           fi
           # Use matrix-level feature override if set, otherwise use global RELEASE_CARGO_FEATURES

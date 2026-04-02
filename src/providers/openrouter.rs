@@ -3,7 +3,7 @@ use crate::providers::traits::{
     ChatMessage, ChatRequest as ProviderChatRequest, ChatResponse as ProviderChatResponse,
     Provider, ProviderCapabilities, TokenUsage, ToolCall as ProviderToolCall,
 };
-use crate::tools::ToolSpec;
+use crate::tools::{SchemaCleanr, ToolSpec};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::de::DeserializeOwned;
@@ -178,21 +178,32 @@ impl OpenRouterProvider {
         self
     }
 
-    fn convert_tools(tools: Option<&[ToolSpec]>) -> Option<Vec<NativeToolSpec>> {
+    fn convert_tools(tools: Option<&[ToolSpec]>, model: &str) -> Option<Vec<NativeToolSpec>> {
         let items = tools?;
         if items.is_empty() {
             return None;
         }
+        // Gemini does not support oneOf/anyOf in tool schemas. Apply the schema
+        // cleaner when routing through a Gemini model so all tools work correctly
+        // regardless of what schema constructs they use internally.
+        let is_gemini = model.contains("gemini");
         let valid: Vec<NativeToolSpec> = items
             .iter()
             .filter(|tool| is_valid_openai_tool_name(&tool.name))
-            .map(|tool| NativeToolSpec {
-                kind: "function".to_string(),
-                function: NativeToolFunctionSpec {
-                    name: tool.name.clone(),
-                    description: tool.description.clone(),
-                    parameters: tool.parameters.clone(),
-                },
+            .map(|tool| {
+                let parameters = if is_gemini {
+                    SchemaCleanr::clean_for_gemini(tool.parameters.clone())
+                } else {
+                    tool.parameters.clone()
+                };
+                NativeToolSpec {
+                    kind: "function".to_string(),
+                    function: NativeToolFunctionSpec {
+                        name: tool.name.clone(),
+                        description: tool.description.clone(),
+                        parameters,
+                    },
+                }
             })
             .collect();
         if valid.is_empty() { None } else { Some(valid) }
@@ -511,7 +522,7 @@ impl Provider for OpenRouterProvider {
             )
         })?;
 
-        let tools = Self::convert_tools(request.tools);
+        let tools = Self::convert_tools(request.tools, model);
         let native_request = NativeChatRequest {
             model: model.to_string(),
             messages: Self::convert_messages(request.messages),
@@ -1214,7 +1225,7 @@ mod tests {
             },
         ];
 
-        let result = OpenRouterProvider::convert_tools(Some(&tools)).unwrap();
+        let result = OpenRouterProvider::convert_tools(Some(&tools), "gpt-4o").unwrap();
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].function.name, "valid_tool");
         assert_eq!(result[1].function.name, "another-valid");
@@ -1230,6 +1241,6 @@ mod tests {
             parameters: serde_json::json!({"type": "object"}),
         }];
 
-        assert!(OpenRouterProvider::convert_tools(Some(&tools)).is_none());
+        assert!(OpenRouterProvider::convert_tools(Some(&tools), "gpt-4o").is_none());
     }
 }

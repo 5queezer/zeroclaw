@@ -452,6 +452,7 @@ mod tests {
         let security = Arc::new(SecurityPolicy::from_config(
             &config.autonomy,
             &config.workspace_dir,
+            config.security.enabled,
         ));
         (tmp, config, security)
     }
@@ -568,6 +569,7 @@ mod tests {
         let security = Arc::new(SecurityPolicy::from_config(
             &config.autonomy,
             &config.workspace_dir,
+            config.security.enabled,
         ));
 
         let tool = ScheduleTool::new(security, config);
@@ -606,6 +608,7 @@ mod tests {
         let security = Arc::new(SecurityPolicy::from_config(
             &config.autonomy,
             &config.workspace_dir,
+            config.security.enabled,
         ));
         let tool = ScheduleTool::new(security, config);
 
@@ -650,6 +653,7 @@ mod tests {
         let security = Arc::new(SecurityPolicy::from_config(
             &config.autonomy,
             &config.workspace_dir,
+            config.security.enabled,
         ));
         let tool = ScheduleTool::new(security, config);
 
@@ -708,6 +712,7 @@ mod tests {
         let security = Arc::new(SecurityPolicy::from_config(
             &config.autonomy,
             &config.workspace_dir,
+            config.security.enabled,
         ));
         let tool = ScheduleTool::new(security, config);
 
@@ -744,6 +749,7 @@ mod tests {
         let security = Arc::new(SecurityPolicy::from_config(
             &config.autonomy,
             &config.workspace_dir,
+            config.security.enabled,
         ));
         let tool = ScheduleTool::new(security, config);
 
@@ -780,6 +786,7 @@ mod tests {
         let security = Arc::new(SecurityPolicy::from_config(
             &config.autonomy,
             &config.workspace_dir,
+            config.security.enabled,
         ));
         let tool = ScheduleTool::new(security, config);
 

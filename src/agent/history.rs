@@ -90,16 +90,23 @@ pub(crate) fn emergency_history_trim(
         if history[i].role == "system" {
             i += 1;
         } else if history[i].role == "assistant" {
-            // Count following tool messages — drop as atomic group
+            // Count the full following tool run (not just up to the cutoff)
+            // to avoid splitting a group at the keep_recent boundary.
             let mut tool_count = 0;
-            while i + 1 + tool_count < history.len().saturating_sub(keep_recent)
-                && history[i + 1 + tool_count].role == "tool"
-            {
+            while i + 1 + tool_count < history.len() && history[i + 1 + tool_count].role == "tool" {
                 tool_count += 1;
             }
-            for _ in 0..=tool_count {
-                history.remove(i);
-                dropped += 1;
+            let cutoff = history.len().saturating_sub(keep_recent);
+            // Only drop if the entire group (assistant + all tools) lies
+            // strictly before the protected suffix.
+            if i + 1 + tool_count <= cutoff {
+                for _ in 0..=tool_count {
+                    history.remove(i);
+                    dropped += 1;
+                }
+            } else {
+                // Group crosses into protected region — skip it entirely
+                i += 1 + tool_count;
             }
         } else {
             history.remove(i);

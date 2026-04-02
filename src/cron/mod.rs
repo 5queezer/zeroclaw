@@ -28,7 +28,11 @@ pub use types::{
 /// Returns `Ok(())` if the command passes all checks, or an error describing
 /// why it was blocked.
 pub fn validate_shell_command(config: &Config, command: &str, approved: bool) -> Result<()> {
-    let security = SecurityPolicy::from_config(&config.autonomy, &config.workspace_dir);
+    let security = SecurityPolicy::from_config(
+        &config.autonomy,
+        &config.workspace_dir,
+        config.security.enabled,
+    );
     validate_shell_command_with_security(&security, command, approved)
 }
 
@@ -714,7 +718,11 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp);
 
-        let security = SecurityPolicy::from_config(&config.autonomy, &config.workspace_dir);
+        let security = SecurityPolicy::from_config(
+            &config.autonomy,
+            &config.workspace_dir,
+            config.security.enabled,
+        );
         assert!(security.is_command_allowed("echo safe"));
     }
 
@@ -909,7 +917,11 @@ mod tests {
         config.autonomy.allowed_commands = vec!["echo".into()];
         config.autonomy.level = crate::security::AutonomyLevel::Supervised;
 
-        let security = SecurityPolicy::from_config(&config.autonomy, &config.workspace_dir);
+        let security = SecurityPolicy::from_config(
+            &config.autonomy,
+            &config.workspace_dir,
+            config.security.enabled,
+        );
         // Simulate scheduler validation path
         let result =
             validate_shell_command_with_security(&security, "curl https://example.com", false);
@@ -1140,5 +1152,27 @@ mod tests {
         assert_eq!(due.len(), 1);
         assert!(!due[0].pending_approval);
         assert!(due[0].created_by.is_none());
+    }
+
+    #[test]
+    fn security_disabled_allows_all_commands() {
+        let tmp = TempDir::new().unwrap();
+        let mut config = test_config(&tmp);
+        config.security.enabled = false;
+
+        let security = SecurityPolicy::from_config(
+            &config.autonomy,
+            &config.workspace_dir,
+            config.security.enabled,
+        );
+
+        // Commands that would normally be blocked must be allowed
+        assert!(security.is_command_allowed("echo `whoami`"));
+        assert!(security.is_command_allowed("rm -rf /"));
+        assert!(
+            security
+                .validate_command_execution("echo $(id)", false)
+                .is_ok()
+        );
     }
 }

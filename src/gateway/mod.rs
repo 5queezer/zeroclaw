@@ -439,9 +439,16 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
     )?);
     let runtime: Arc<dyn runtime::RuntimeAdapter> =
         Arc::from(runtime::create_runtime(&config.runtime)?);
+    if !config.security.enabled {
+        tracing::warn!(
+            "Security is DISABLED via [security].enabled=false: running with permissive policy \
+             (no workspace restriction, commands unrestricted, no approval requirements)."
+        );
+    }
     let security = Arc::new(SecurityPolicy::from_config(
         &config.autonomy,
         &config.workspace_dir,
+        config.security.enabled,
     ));
 
     let (composio_key, composio_entity_id) = if config.composio.enabled {
@@ -1009,7 +1016,9 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         )
         // v1.0 REST-style path bindings
         .route("/message:send", post(a2a::handle_message_send_rest))
+        .route("/message:stream", post(a2a::handle_message_stream_rest))
         .route("/tasks/{id}", get(a2a::handle_tasks_get_rest))
+        .route("/tasks/{id}:cancel", post(a2a::handle_tasks_cancel_rest))
         // v0.3 backward-compatibility (unified JSON-RPC endpoint)
         .route("/a2a", post(a2a::handle_a2a_rpc));
 

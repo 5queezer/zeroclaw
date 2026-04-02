@@ -1,9 +1,9 @@
 //! # A2A Tool — MVP Implementation
 //!
 //! Client-side tool for interacting with remote A2A agents.
-//! Supports: `discover`, `send`, `status`, `result` (polling).
+//! Supports: `discover`, `send`, `status`, `result` (polling), `cancel`.
 //!
-//! **Not yet implemented:** streaming (`message/stream`), cancel,
+//! **Not yet implemented:** streaming (`message/stream`),
 //! multi-turn conversations, structured/binary message parts.
 
 use super::traits::{Tool, ToolResult};
@@ -236,6 +236,43 @@ impl A2aTool {
             }),
         }
     }
+    async fn action_cancel(
+        &self,
+        url: &str,
+        bearer_token: Option<&str>,
+        task_id: &str,
+    ) -> anyhow::Result<ToolResult> {
+        let mut cancel_url = self.validate_url(url)?;
+        cancel_url
+            .path_segments_mut()
+            .map_err(|()| anyhow::anyhow!("URL cannot be a base"))?
+            .push("tasks")
+            .push(&format!("{task_id}:cancel"));
+        let client = self.build_client()?;
+
+        let mut req = client.post(cancel_url);
+        if let Some(token) = bearer_token {
+            req = req.bearer_auth(token);
+        }
+
+        let resp = req.send().await?;
+        let status = resp.status();
+        let resp_body = resp.text().await?;
+
+        if status.is_success() {
+            Ok(ToolResult {
+                success: true,
+                output: resp_body,
+                error: None,
+            })
+        } else {
+            Ok(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some(format!("HTTP {status}: {resp_body}")),
+            })
+        }
+    }
 }
 
 #[async_trait]
@@ -246,9 +283,9 @@ impl Tool for A2aTool {
 
     fn description(&self) -> &str {
         "Communicate with remote agents via the A2A (Agent-to-Agent) protocol. \
-         Supports four actions: 'discover' to fetch a remote agent's capability card, \
-         'send' to dispatch a task message, 'status' to check task progress, and \
-         'result' to retrieve task output artifacts."
+         Supports five actions: 'discover' to fetch a remote agent's capability card, \
+         'send' to dispatch a task message, 'status' to check task progress, \
+         'result' to retrieve task output artifacts, and 'cancel' to cancel a running task."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -257,7 +294,7 @@ impl Tool for A2aTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["discover", "send", "status", "result"],
+                    "enum": ["discover", "send", "status", "result", "cancel"],
                     "description": "A2A operation to perform"
                 },
                 "url": {
@@ -270,7 +307,7 @@ impl Tool for A2aTool {
                 },
                 "task_id": {
                     "type": "string",
-                    "description": "Task ID (required for status/result actions)"
+                    "description": "Task ID (required for status/result/cancel actions)"
                 },
                 "message": {
                     "type": "string",
@@ -366,11 +403,22 @@ impl Tool for A2aTool {
                 self.action_result(&url, bearer_token.as_deref(), &task_id)
                     .await
             }
+            "cancel" => {
+                if task_id.is_empty() {
+                    return Ok(ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some("Missing required parameter: task_id".into()),
+                    });
+                }
+                self.action_cancel(&url, bearer_token.as_deref(), &task_id)
+                    .await
+            }
             other => Ok(ToolResult {
                 success: false,
                 output: String::new(),
                 error: Some(format!(
-                    "Unknown action: '{other}'. Valid actions: discover, send, status, result"
+                    "Unknown action: '{other}'. Valid actions: discover, send, status, result, cancel"
                 )),
             }),
         }
@@ -581,6 +629,29 @@ mod tests {
             .unwrap();
         assert!(!result.success);
         assert!(result.error.as_deref().unwrap().contains("task_id"));
+    }
+
+    #[tokio::test]
+    async fn cancel_missing_task_id_returns_error() {
+        let tool = test_tool();
+        let result = tool
+            .execute(json!({"action": "cancel", "url": "http://localhost"}))
+            .await
+            .unwrap();
+        assert!(!result.success);
+        assert!(result.error.as_deref().unwrap().contains("task_id"));
+    }
+
+    #[test]
+    fn cancel_action_in_schema() {
+        let tool = test_tool();
+        let schema = tool.parameters_schema();
+        let actions = schema["properties"]["action"]["enum"].as_array().unwrap();
+        let action_strs: Vec<&str> = actions.iter().filter_map(|v| v.as_str()).collect();
+        assert!(
+            action_strs.contains(&"cancel"),
+            "schema must include cancel action"
+        );
     }
 
     // ── HTTP integration tests (wiremock) ────────────────────

@@ -7320,8 +7320,14 @@ impl ChannelConfig for FeishuConfig {
 // ── Security Config ─────────────────────────────────────────────────
 
 /// Security configuration for sandboxing, resource limits, and audit logging
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SecurityConfig {
+    /// Global security enable switch. When set to `false`, all security restrictions
+    /// are disabled (sandboxing, filesystem limits, command allowlists, etc.).
+    /// Use with caution — disabling security removes all safety boundaries.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
     /// Sandbox configuration
     #[serde(default)]
     pub sandbox: SandboxConfig,
@@ -7353,6 +7359,22 @@ pub struct SecurityConfig {
     /// WebAuthn / FIDO2 hardware key authentication configuration.
     #[serde(default)]
     pub webauthn: WebAuthnConfig,
+}
+
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            sandbox: SandboxConfig::default(),
+            resources: ResourceLimitsConfig::default(),
+            process_limits: ProcessLimitsConfig::default(),
+            audit: AuditConfig::default(),
+            otp: OtpConfig::default(),
+            estop: EstopConfig::default(),
+            nevis: NevisConfig::default(),
+            webauthn: WebAuthnConfig::default(),
+        }
+    }
 }
 
 /// WebAuthn / FIDO2 hardware key authentication configuration (`[security.webauthn]`).
