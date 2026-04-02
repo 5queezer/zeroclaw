@@ -1569,10 +1569,33 @@ impl SecurityPolicy {
     }
 
     /// Build from config sections
+    ///
+    /// When `security_enabled` is `false`, returns a permissive policy that allows
+    /// all operations (full autonomy, no workspace restrictions, all commands allowed).
     pub fn from_config(
         autonomy_config: &crate::config::AutonomyConfig,
         workspace_dir: &Path,
+        security_enabled: bool,
     ) -> Self {
+        // When security is disabled globally, return a permissive policy
+        if !security_enabled {
+            return Self {
+                autonomy: AutonomyLevel::Full,
+                workspace_dir: workspace_dir.to_path_buf(),
+                workspace_only: false,
+                allowed_commands: vec!["*".to_string()],
+                forbidden_paths: Vec::new(),
+                allowed_roots: Vec::new(),
+                max_actions_per_hour: u32::MAX,
+                max_cost_per_day_cents: u32::MAX,
+                require_approval_for_medium_risk: false,
+                block_high_risk_commands: false,
+                shell_env_passthrough: Vec::new(),
+                shell_timeout_secs: autonomy_config.shell_timeout_secs,
+                tracker: PerSenderTracker::new(),
+            };
+        }
+
         Self {
             autonomy: autonomy_config.level,
             workspace_dir: workspace_dir.to_path_buf(),
@@ -2179,7 +2202,7 @@ mod tests {
             ..crate::config::AutonomyConfig::default()
         };
         let workspace = PathBuf::from("/tmp/test-workspace");
-        let policy = SecurityPolicy::from_config(&autonomy_config, &workspace);
+        let policy = SecurityPolicy::from_config(&autonomy_config, &workspace, true);
 
         assert_eq!(policy.autonomy, AutonomyLevel::Full);
         assert!(!policy.workspace_only);
@@ -2200,7 +2223,7 @@ mod tests {
             ..crate::config::AutonomyConfig::default()
         };
         let workspace = PathBuf::from("/tmp/test-workspace");
-        let policy = SecurityPolicy::from_config(&autonomy_config, &workspace);
+        let policy = SecurityPolicy::from_config(&autonomy_config, &workspace, true);
 
         let expected_home_root = if let Some(home) = std::env::var_os("HOME") {
             PathBuf::from(home).join("Desktop")
@@ -2840,7 +2863,7 @@ mod tests {
             ..crate::config::AutonomyConfig::default()
         };
         let workspace = PathBuf::from("/tmp/test");
-        let policy = SecurityPolicy::from_config(&autonomy_config, &workspace);
+        let policy = SecurityPolicy::from_config(&autonomy_config, &workspace, true);
         assert!(!policy.is_rate_limited());
     }
 
