@@ -45,8 +45,12 @@ pub async fn check(target_version: Option<&str>) -> Result<UpdateInfo> {
         .await
         .context("failed to reach GitHub releases API")?;
 
-    if !resp.status().is_success() {
-        bail!("GitHub API returned {}", resp.status());
+    let status = resp.status();
+    if !status.is_success() {
+        if status == reqwest::StatusCode::NOT_FOUND {
+            bail!("no releases found — publish a release on GitHub first, or build from source");
+        }
+        bail!("GitHub API returned {status}");
     }
 
     let release: serde_json::Value = resp.json().await?;
@@ -173,7 +177,13 @@ fn current_target_triple() -> &'static str {
         }
     } else if cfg!(target_os = "linux") {
         if cfg!(target_arch = "aarch64") {
-            "aarch64-unknown-linux-gnu"
+            if cfg!(target_env = "musl") {
+                "aarch64-unknown-linux-musl"
+            } else {
+                "aarch64-unknown-linux-gnu"
+            }
+        } else if cfg!(target_env = "musl") {
+            "x86_64-unknown-linux-musl"
         } else {
             "x86_64-unknown-linux-gnu"
         }
@@ -440,7 +450,9 @@ mod tests {
         let release = make_release(&[
             "hrafn-aarch64-linux-android.tar.gz",
             "hrafn-aarch64-unknown-linux-gnu.tar.gz",
+            "hrafn-aarch64-unknown-linux-musl.tar.gz",
             "hrafn-x86_64-unknown-linux-gnu.tar.gz",
+            "hrafn-x86_64-unknown-linux-musl.tar.gz",
             "hrafn-x86_64-apple-darwin.tar.gz",
             "hrafn-aarch64-apple-darwin.tar.gz",
         ]);
@@ -453,6 +465,18 @@ mod tests {
             !url.contains("android"),
             "should not select android binary, got: {url}"
         );
+        // Must select the correct libc variant for the current build
+        if cfg!(target_env = "musl") {
+            assert!(
+                url.contains("musl"),
+                "musl build should select musl asset, got: {url}"
+            );
+        } else {
+            assert!(
+                !url.contains("musl"),
+                "gnu build should not select musl asset, got: {url}"
+            );
+        }
     }
 
     #[test]
