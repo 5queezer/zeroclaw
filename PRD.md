@@ -60,16 +60,19 @@ A modular, community-driven AI agent runtime where:
 
 ### Current structure (Phase 1: features in monorepo)
 
-All modules live under `src/` with `#[cfg(feature)]` gating:
+All modules live under `src/`. Some directories already use `#[cfg(feature)]` gating; others will be gated in M1:
 
 ```
-src/agent/        # Agent loop, orchestration
-src/config/       # TOML schema, workspace management
+src/agent/        # Agent loop, orchestration (always compiled)
+src/config/       # TOML schema, workspace management (always compiled)
 src/channels/     # Channel implementations (gated per-channel)
 src/tools/        # Tool implementations (gated per-tool)
-src/providers/    # LLM provider integrations
-src/memory/       # Memory backends (gated per-backend)
+src/providers/    # LLM provider integrations (not yet feature-gated)
+src/memory/       # Memory backends (not yet feature-gated)
 ```
+
+> **Note:** `src/providers/` and `src/memory/` are compiled unconditionally today.
+> Feature-gating these directories is tracked in milestone M1.
 
 ### Planned structure (Phase 2: Cargo workspace, >20 modules)
 
@@ -83,13 +86,13 @@ hrafn-memory-*      # Memory backends
 
 ### Memory architecture
 
-The `Memory` trait is the abstraction boundary. The agent loop speaks only to the trait, never to a specific backend. MuninnDB is the recommended implementation, available as an opt-in Cargo feature (`memory-muninndb`). The default backend is SQLite (inherited from ZeroClaw).
+The `Memory` trait is the abstraction boundary. The agent loop speaks only to the trait, never to a specific backend. The default backend is SQLite (inherited from ZeroClaw). MuninnDB is the planned opt-in backend; `src/memory/muninndb.rs` exists but is compiled unconditionally today. The `memory-muninndb` Cargo feature will be added in M2.
 
 MuninnDB is designed as a standalone crate -- it can be used independently of Hrafn. Hrafn is a consumer, not the owner. This keeps both projects independently useful and avoids tight coupling.
 
 ```
 Agent Loop → Memory Trait → SQLite (default)
-                          → MuninnDB (opt-in, Ebbinghaus + Hebbian + Dream Engine)
+                          → MuninnDB (planned opt-in, Ebbinghaus + Hebbian + Dream Engine)
                           → Custom (implement the trait)
 ```
 
@@ -178,12 +181,16 @@ This decouples validation from implementation. No plugin gets ported until the c
 
 ## Bundled features (Phase 1)
 
-### Default (always compiled)
+### Conceptual core (always compiled)
 
 - Agent loop (process_message pipeline)
 - Config system (TOML)
 - CLI (status, doctor, onboard)
 - MCP client (runtime plugin loading)
+
+> **Current Cargo.toml defaults:** `default = ["desktop", "observability-prometheus", "skill-creation"]`.
+> The `desktop` feature pulls in clap, axum, dialoguer, indicatif, tar, flate2, tokio-tungstenite, rustls, and others.
+> Achieving a truly minimal default build is tracked in M1.
 
 ### Opt-in Cargo features
 
@@ -218,7 +225,7 @@ Planned features (tracked in #90):
 
 ### MuninnDB
 
-Standalone cognitive memory crate. Ebbinghaus-curve decay for forgetting, Hebbian learning for association strengthening. Dream Engine consolidation (LLM-powered, runs via Ollama to keep data local). Consumed by Hrafn via the `Memory` trait behind the `memory-muninndb` feature gate.
+Standalone cognitive memory crate. Ebbinghaus-curve decay for forgetting, Hebbian learning for association strengthening. Dream Engine consolidation (LLM-powered, runs via Ollama to keep data local). Consumed by Hrafn via the `Memory` trait. The `memory-muninndb` feature gate is planned for M2; today the MuninnDB backend compiles unconditionally.
 
 ### A2A Protocol
 
@@ -313,12 +320,12 @@ A security audit of the inherited ZeroClaw codebase identified 7 issue groups, t
 
 ## Resolved decisions
 
-1. **Name:** Hrafn (altnordisch fuer Rabe). Crates.io und GitHub verfuegbar.
+1. **Name:** Hrafn (Old Norse for "raven"). Available on crates.io and GitHub.
 2. **Logo:** Geometric line-art raven in blue.
 3. **Domain:** GitHub-only until M4. Evaluate hrafn.dev if traction warrants it.
 4. **License:** Apache-2.0 (inherited, no change).
 5. **Localizations:** English-only README. Community translations welcome as `docs/README.<lang>.md`.
-6. **Memory:** MuninnDB as opt-in feature behind `Memory` trait boundary. SQLite as default.
+6. **Memory:** MuninnDB as planned opt-in backend behind the `Memory` trait boundary (feature gate in M2). SQLite as default.
 
 ## Open questions
 
