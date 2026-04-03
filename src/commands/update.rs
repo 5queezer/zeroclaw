@@ -132,7 +132,9 @@ pub async fn run(target_version: Option<&str>, include_pre: bool, force: bool) -
         ""
     };
     if force && !update_info.is_newer {
-        if update_info.current_version == update_info.latest_version {
+        let current_base = strip_git_describe(&update_info.current_version);
+        let latest_base = strip_git_describe(&update_info.latest_version);
+        if current_base == latest_base {
             println!("Reinstalling v{}{}", update_info.current_version, pre_tag);
         } else {
             println!(
