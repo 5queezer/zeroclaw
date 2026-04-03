@@ -131,10 +131,26 @@ pub async fn run(target_version: Option<&str>, include_pre: bool, force: bool) -
     } else {
         ""
     };
-    println!(
-        "Update available: v{} -> v{}{}",
-        update_info.current_version, update_info.latest_version, pre_tag
-    );
+    if force && !update_info.is_newer {
+        if update_info.current_version == update_info.latest_version {
+            println!("Reinstalling v{}{}", update_info.current_version, pre_tag);
+        } else {
+            println!(
+                "Forcing downgrade: v{} -> v{}{}",
+                update_info.current_version, update_info.latest_version, pre_tag
+            );
+        }
+    } else if force {
+        println!(
+            "Forcing update: v{} -> v{}{}",
+            update_info.current_version, update_info.latest_version, pre_tag
+        );
+    } else {
+        println!(
+            "Update available: v{} -> v{}{}",
+            update_info.current_version, update_info.latest_version, pre_tag
+        );
+    }
 
     let download_url = update_info
         .download_url

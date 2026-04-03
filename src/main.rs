@@ -1600,6 +1600,9 @@ async fn main() -> Result<()> {
             version,
             pre,
         } => {
+            if check && force {
+                bail!("--check and --force cannot be used together");
+            }
             if check {
                 let info = commands::update::check(version.as_deref(), pre).await?;
                 if info.is_newer {
