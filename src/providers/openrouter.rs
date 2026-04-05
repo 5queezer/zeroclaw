@@ -212,7 +212,7 @@ impl OpenRouterProvider {
     fn convert_messages(messages: &[ChatMessage]) -> Vec<NativeMessage> {
         messages
             .iter()
-            .map(|m| {
+            .filter_map(|m| {
                 if m.role == "assistant" {
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(&m.content) {
                         if let Some(tool_calls_value) = value.get("tool_calls") {
@@ -240,15 +240,20 @@ impl OpenRouterProvider {
                                     .get("reasoning_content")
                                     .and_then(serde_json::Value::as_str)
                                     .map(ToString::to_string);
-                                return NativeMessage {
+                                return Some(NativeMessage {
                                     role: "assistant".to_string(),
                                     content,
                                     tool_call_id: None,
                                     tool_calls: Some(tool_calls),
                                     reasoning_content,
-                                };
+                                });
                             }
                         }
+                    }
+
+                    // Plain assistant message — skip if empty
+                    if m.content.trim().is_empty() {
+                        return None;
                     }
                 }
 
@@ -263,23 +268,28 @@ impl OpenRouterProvider {
                             .and_then(serde_json::Value::as_str)
                             .map(|value| MessageContent::Text(value.to_string()))
                             .or_else(|| Some(MessageContent::Text(m.content.clone())));
-                        return NativeMessage {
+                        return Some(NativeMessage {
                             role: "tool".to_string(),
                             content,
                             tool_call_id,
                             tool_calls: None,
                             reasoning_content: None,
-                        };
+                        });
                     }
                 }
 
-                NativeMessage {
+                // Skip user/system messages with empty content
+                if m.role != "tool" && m.content.trim().is_empty() {
+                    return None;
+                }
+
+                Some(NativeMessage {
                     role: m.role.clone(),
                     content: Some(Self::to_message_content(&m.role, &m.content)),
                     tool_call_id: None,
                     tool_calls: None,
                     reasoning_content: None,
-                }
+                })
             })
             .collect()
     }

@@ -340,7 +340,7 @@ impl OllamaProvider {
 
         messages
             .iter()
-            .map(|message| {
+            .filter_map(|message| {
                 if message.role == "assistant" {
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(&message.content) {
                         if let Some(tool_calls_value) = value.get("tool_calls") {
@@ -366,15 +366,20 @@ impl OllamaProvider {
                                     .get("content")
                                     .and_then(serde_json::Value::as_str)
                                     .map(ToString::to_string);
-                                return Message {
+                                return Some(Message {
                                     role: "assistant".to_string(),
                                     content,
                                     images: None,
                                     tool_calls: Some(outgoing_calls),
                                     tool_name: None,
-                                };
+                                });
                             }
                         }
+                    }
+
+                    // Plain assistant message — skip if empty
+                    if message.content.trim().is_empty() {
+                        return None;
                     }
                 }
 
@@ -400,34 +405,42 @@ impl OllamaProvider {
                                     .then_some(message.content.clone())
                             });
 
-                        return Message {
+                        return Some(Message {
                             role: "tool".to_string(),
                             content,
                             images: None,
                             tool_calls: None,
                             tool_name,
-                        };
+                        });
                     }
                 }
 
                 if message.role == "user" {
+                    if message.content.trim().is_empty() {
+                        return None;
+                    }
                     let (content, images) = self.convert_user_message_content(&message.content);
-                    return Message {
+                    return Some(Message {
                         role: "user".to_string(),
                         content,
                         images,
                         tool_calls: None,
                         tool_name: None,
-                    };
+                    });
                 }
 
-                Message {
+                // Skip other roles (e.g. system) with empty content
+                if message.content.trim().is_empty() {
+                    return None;
+                }
+
+                Some(Message {
                     role: message.role.clone(),
                     content: Some(message.content.clone()),
                     images: None,
                     tool_calls: None,
                     tool_name: None,
-                }
+                })
             })
             .collect()
     }
