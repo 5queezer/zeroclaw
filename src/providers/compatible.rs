@@ -8,6 +8,7 @@ use crate::providers::traits::{
     Provider, StreamChunk, StreamError, StreamEvent, StreamOptions, StreamResult, TokenUsage,
     ToolCall as ProviderToolCall,
 };
+use crate::tools::SchemaCleanr;
 use async_trait::async_trait;
 use futures_util::{StreamExt, stream};
 use reqwest::{
@@ -451,7 +452,7 @@ impl OpenAiCompatibleProvider {
                     "function": {
                         "name": tool.name,
                         "description": tool.description,
-                        "parameters": tool.parameters
+                        "parameters": SchemaCleanr::clean_for_openai(tool.parameters.clone())
                     }
                 })
             })
@@ -1395,7 +1396,7 @@ impl OpenAiCompatibleProvider {
                         "function": {
                             "name": tool.name,
                             "description": tool.description,
-                            "parameters": tool.parameters,
+                            "parameters": SchemaCleanr::clean_for_openai(tool.parameters.clone()),
                         }
                     })
                 })
