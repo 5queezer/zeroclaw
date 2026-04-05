@@ -1,32 +1,32 @@
 # Default owner for all files
-* @theonlyhennygod @JordanTheJet @SimianAstronaut7
+* @5queezer
 
 # Important functional modules
-/src/agent/** @theonlyhennygod @JordanTheJet @SimianAstronaut7
-/src/providers/** @theonlyhennygod @JordanTheJet @SimianAstronaut7
-/src/channels/** @theonlyhennygod @JordanTheJet @SimianAstronaut7
-/src/tools/** @theonlyhennygod @JordanTheJet @SimianAstronaut7
-/src/gateway/** @theonlyhennygod @JordanTheJet @SimianAstronaut7
-/src/runtime/** @theonlyhennygod @JordanTheJet @SimianAstronaut7
-/src/memory/** @theonlyhennygod @JordanTheJet @SimianAstronaut7
-/Cargo.toml @theonlyhennygod @JordanTheJet @SimianAstronaut7
-/Cargo.lock @theonlyhennygod @JordanTheJet @SimianAstronaut7
+/src/agent/** @5queezer
+/src/providers/** @5queezer
+/src/channels/** @5queezer
+/src/tools/** @5queezer
+/src/gateway/** @5queezer
+/src/runtime/** @5queezer
+/src/memory/** @5queezer
+/Cargo.toml @5queezer
+/Cargo.lock @5queezer
 
 # Security / tests / CI-CD ownership
-/src/security/** @theonlyhennygod @JordanTheJet @SimianAstronaut7
-/tests/** @theonlyhennygod @JordanTheJet @SimianAstronaut7
-/.github/** @theonlyhennygod @JordanTheJet @SimianAstronaut7
-/.github/workflows/** @theonlyhennygod @JordanTheJet @SimianAstronaut7
-/.github/codeql/** @theonlyhennygod @JordanTheJet @SimianAstronaut7
-/.github/dependabot.yml @theonlyhennygod @JordanTheJet @SimianAstronaut7
-/SECURITY.md @theonlyhennygod @JordanTheJet @SimianAstronaut7
-/docs/actions-source-policy.md @theonlyhennygod @JordanTheJet @SimianAstronaut7
-/docs/ci-map.md @theonlyhennygod @JordanTheJet @SimianAstronaut7
+/src/security/** @5queezer
+/tests/** @5queezer
+/.github/** @5queezer
+/.github/workflows/** @5queezer
+/.github/codeql/** @5queezer
+/.github/dependabot.yml @5queezer
+/SECURITY.md @5queezer
+/docs/actions-source-policy.md @5queezer
+/docs/ci-map.md @5queezer
 
 # Docs & governance
-/docs/** @theonlyhennygod @JordanTheJet @SimianAstronaut7
-/AGENTS.md @theonlyhennygod @JordanTheJet @SimianAstronaut7
-/CLAUDE.md @theonlyhennygod @JordanTheJet @SimianAstronaut7
-/CONTRIBUTING.md @theonlyhennygod @JordanTheJet @SimianAstronaut7
-/docs/pr-workflow.md @theonlyhennygod @JordanTheJet @SimianAstronaut7
-/docs/reviewer-playbook.md @theonlyhennygod @JordanTheJet @SimianAstronaut7
+/docs/** @5queezer
+/AGENTS.md @5queezer
+/CLAUDE.md @5queezer
+/CONTRIBUTING.md @5queezer
+/docs/pr-workflow.md @5queezer
+/docs/reviewer-playbook.md @5queezer
