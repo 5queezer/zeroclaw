@@ -10,14 +10,18 @@ use hrafn::config::{AutonomyConfig, ChannelsConfig, Config, GatewayConfig, Secur
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn config_unknown_keys_parse_without_error() {
+fn config_unknown_keys_rejected() {
     let toml_str = r#"
 default_temperature = 0.7
-totally_unknown_key = "should be ignored"
+totally_unknown_key = "should be rejected"
 another_fake = 42
 "#;
-    let parsed: Config = toml::from_str(toml_str).expect("unknown keys should be ignored");
-    assert!((parsed.default_temperature - 0.7).abs() < f64::EPSILON);
+    let err = toml::from_str::<Config>(toml_str)
+        .expect_err("unknown keys should be rejected by deny_unknown_fields");
+    assert!(
+        err.to_string().contains("unknown field"),
+        "error should name the unknown field, got: {err}"
+    );
 }
 
 #[test]
@@ -465,8 +469,10 @@ allowed_users = ["@user:example.com"]
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn config_toplevel_cli_section_with_whatsapp_parses() {
-    // Exact config from issue #3456
+fn config_toplevel_cli_section_rejected() {
+    // Previously issue #3456 — top-level [cli] was silently ignored.
+    // With deny_unknown_fields, [cli] at top level is correctly rejected;
+    // CLI config belongs under [channels_config.cli].
     let toml_str = r#"
 [cli]
 
@@ -474,15 +480,12 @@ fn config_toplevel_cli_section_with_whatsapp_parses() {
 session_path = "~/.hrafn/state/whatsapp-web/session.db"
 allowed_numbers = ["*"]
 "#;
-    let parsed: Config = toml::from_str(toml_str)
-        .expect("top-level [cli] section with [channels_config.whatsapp] should parse");
-    assert!(parsed.channels_config.whatsapp.is_some());
-    let wa = parsed.channels_config.whatsapp.unwrap();
-    assert_eq!(
-        wa.session_path.as_deref(),
-        Some("~/.hrafn/state/whatsapp-web/session.db")
+    let err = toml::from_str::<Config>(toml_str)
+        .expect_err("top-level [cli] should be rejected by deny_unknown_fields");
+    assert!(
+        err.to_string().contains("unknown field"),
+        "error should name [cli] as unknown, got: {err}"
     );
-    assert_eq!(wa.allowed_numbers, vec!["*".to_string()]);
 }
 
 #[test]
