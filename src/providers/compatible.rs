@@ -1440,7 +1440,7 @@ impl OpenAiCompatibleProvider {
     ) -> Vec<NativeMessage> {
         messages
             .iter()
-            .map(|message| {
+            .filter_map(|message| {
                 if message.role == "assistant" {
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(&message.content)
                     {
@@ -1475,15 +1475,20 @@ impl OpenAiCompatibleProvider {
                                     .and_then(serde_json::Value::as_str)
                                     .map(ToString::to_string);
 
-                                return NativeMessage {
+                                return Some(NativeMessage {
                                     role: "assistant".to_string(),
                                     content,
                                     tool_call_id: None,
                                     tool_calls: Some(tool_calls),
                                     reasoning_content,
-                                };
+                                });
                             }
                         }
+                    }
+
+                    // Plain assistant message — skip if empty
+                    if message.content.trim().is_empty() {
+                        return None;
                     }
                 }
 
@@ -1499,17 +1504,22 @@ impl OpenAiCompatibleProvider {
                             .map(|value| MessageContent::Text(value.to_string()))
                             .or_else(|| Some(MessageContent::Text(message.content.clone())));
 
-                        return NativeMessage {
+                        return Some(NativeMessage {
                             role: "tool".to_string(),
                             content,
                             tool_call_id,
                             tool_calls: None,
                             reasoning_content: None,
-                        };
+                        });
                     }
                 }
 
-                NativeMessage {
+                // Skip user/system messages with empty content
+                if message.role != "tool" && message.content.trim().is_empty() {
+                    return None;
+                }
+
+                Some(NativeMessage {
                     role: message.role.clone(),
                     content: Some(Self::to_message_content(
                         &message.role,
@@ -1519,7 +1529,7 @@ impl OpenAiCompatibleProvider {
                     tool_call_id: None,
                     tool_calls: None,
                     reasoning_content: None,
-                }
+                })
             })
             .collect()
     }

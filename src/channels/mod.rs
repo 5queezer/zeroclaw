@@ -1203,6 +1203,13 @@ fn proactive_trim_turns(turns: &mut Vec<ChatMessage>, budget: usize) -> usize {
 }
 
 fn append_sender_turn(ctx: &ChannelRuntimeContext, sender_key: &str, turn: ChatMessage) {
+    // Skip empty messages to prevent poisoning conversation history.
+    // Tool messages are always allowed (they carry structured payloads).
+    if turn.role != "tool" && turn.content.trim().is_empty() {
+        tracing::warn!("Skipping empty {} message in session history", turn.role);
+        return;
+    }
+
     // Persist to JSONL before adding to in-memory history.
     if let Some(ref store) = ctx.session_store {
         if let Err(e) = store.append(sender_key, &turn) {

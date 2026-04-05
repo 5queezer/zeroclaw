@@ -1236,12 +1236,18 @@ impl Provider for GeminiProvider {
                     system_parts.push(&msg.content);
                 }
                 "user" => {
+                    if msg.content.trim().is_empty() {
+                        continue;
+                    }
                     contents.push(Content {
                         role: Some("user".to_string()),
                         parts: build_parts(&msg.content),
                     });
                 }
                 "assistant" => {
+                    if msg.content.trim().is_empty() {
+                        continue;
+                    }
                     // Gemini API uses "model" role instead of "assistant"
                     contents.push(Content {
                         role: Some("model".to_string()),

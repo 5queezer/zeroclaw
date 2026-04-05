@@ -298,7 +298,7 @@ impl CopilotProvider {
     fn convert_messages(messages: &[ChatMessage]) -> Vec<ApiMessage> {
         messages
             .iter()
-            .map(|message| {
+            .filter_map(|message| {
                 if message.role == "assistant" {
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(&message.content) {
                         if let Some(tool_calls_value) = value.get("tool_calls") {
@@ -322,14 +322,19 @@ impl CopilotProvider {
                                     .and_then(serde_json::Value::as_str)
                                     .map(|s| ApiContent::Text(s.to_string()));
 
-                                return ApiMessage {
+                                return Some(ApiMessage {
                                     role: "assistant".to_string(),
                                     content,
                                     tool_call_id: None,
                                     tool_calls: Some(tool_calls),
-                                };
+                                });
                             }
                         }
+                    }
+
+                    // Plain assistant message — skip if empty
+                    if message.content.trim().is_empty() {
+                        return None;
                     }
                 }
 
@@ -344,21 +349,26 @@ impl CopilotProvider {
                             .and_then(serde_json::Value::as_str)
                             .map(|s| ApiContent::Text(s.to_string()));
 
-                        return ApiMessage {
+                        return Some(ApiMessage {
                             role: "tool".to_string(),
                             content,
                             tool_call_id,
                             tool_calls: None,
-                        };
+                        });
                     }
                 }
 
-                ApiMessage {
+                // Skip user/system messages with empty content
+                if message.role != "tool" && message.content.trim().is_empty() {
+                    return None;
+                }
+
+                Some(ApiMessage {
                     role: message.role.clone(),
                     content: Self::to_api_content(&message.role, &message.content),
                     tool_call_id: None,
                     tool_calls: None,
-                }
+                })
             })
             .collect()
     }
