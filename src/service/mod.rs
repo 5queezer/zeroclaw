@@ -788,76 +788,89 @@ fn is_root() -> bool {
 }
 
 /// Check if the hrafn user exists and has expected properties.
-/// Returns Ok if user doesn't exist (OpenRC will handle creation or fail gracefully).
-/// Returns error if user exists but has unexpected properties.
-fn check_hrafn_user() -> Result<()> {
-    let output = Command::new("getent").args(["passwd", "hrafn"]).output();
-    let is_alpine = Path::new("/etc/alpine-release").exists();
+/// Returns `Ok(true)` if user is fine, `Ok(false)` if user needs recreation,
+/// `Err` for unexpected failures (e.g. getent not found).
+fn check_hrafn_user() -> Result<bool> {
+    let output = Command::new("getent")
+        .args(["passwd", "hrafn"])
+        .output()
+        .context("Failed to run getent")?;
 
-    let (del_cmd, add_cmd) = if is_alpine {
-        (
-            "deluser hrafn && delgroup hrafn",
-            "addgroup -S hrafn && adduser -S -s /sbin/nologin -H -D -G hrafn hrafn",
-        )
-    } else {
-        ("userdel hrafn", "useradd -r -s /sbin/nologin hrafn")
-    };
-
-    match output {
-        Ok(output) if output.status.success() => {
-            let passwd_entry = String::from_utf8_lossy(&output.stdout);
-            let parts: Vec<&str> = passwd_entry.split(':').collect();
-            if parts.len() >= 7 {
-                let uid = parts[2];
-                let gid = parts[3];
-                let home = parts[5];
-                let shell = parts[6];
-
-                if uid.parse::<u32>().unwrap_or(999) >= 1000 {
-                    bail!(
-                        "User 'hrafn' exists but has unexpected UID {} (expected system UID < 1000).\n\
-                         Recreate with: sudo {} && sudo {}",
-                        uid,
-                        del_cmd,
-                        add_cmd
-                    );
-                }
-
-                if !shell.contains("nologin") && !shell.contains("false") {
-                    bail!(
-                        "User 'hrafn' exists but has unexpected shell '{}'.\n\
-                         Expected nologin/false for security. Fix with: sudo {} && sudo {}",
-                        shell,
-                        del_cmd,
-                        add_cmd
-                    );
-                }
-
-                if home != "/var/lib/hrafn" && home != "/nonexistent" {
-                    eprintln!(
-                        "⚠️  Warning: hrafn user has home directory '{}' (expected /var/lib/hrafn or /nonexistent)",
-                        home
-                    );
-                }
-
-                let _ = gid;
-            }
-            Ok(())
-        }
-        _ => Ok(()),
+    if !output.status.success() {
+        // User doesn't exist — caller will handle creation.
+        return Ok(true);
     }
+
+    let passwd_entry = String::from_utf8_lossy(&output.stdout);
+    let passwd_entry = passwd_entry.trim();
+    let parts: Vec<&str> = passwd_entry.split(':').collect();
+    if parts.len() < 7 {
+        return Ok(true);
+    }
+
+    let uid = parts[2];
+    let home = parts[5];
+    let shell = parts[6];
+
+    if uid.parse::<u32>().unwrap_or(999) >= 1000 {
+        eprintln!(
+            "⚠️  hrafn user has non-system UID {} (expected < 1000), recreating...",
+            uid
+        );
+        return Ok(false);
+    }
+
+    if !shell.contains("nologin") && !shell.contains("false") {
+        eprintln!(
+            "⚠️  hrafn user has wrong shell '{}', recreating with /sbin/nologin...",
+            shell
+        );
+        return Ok(false);
+    }
+
+    if home != "/var/lib/hrafn" && home != "/nonexistent" {
+        eprintln!(
+            "⚠️  Warning: hrafn user has home directory '{}' (expected /var/lib/hrafn or /nonexistent)",
+            home
+        );
+    }
+
+    Ok(true)
 }
 
 fn ensure_hrafn_user() -> Result<()> {
-    let output = Command::new("getent").args(["passwd", "hrafn"]).output();
-    if let Ok(output) = output {
-        if output.status.success() {
-            return check_hrafn_user();
+    let is_alpine = Path::new("/etc/alpine-release").exists();
+
+    let user_exists = Command::new("getent")
+        .args(["passwd", "hrafn"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if user_exists {
+        if check_hrafn_user()? {
+            return Ok(());
+        }
+
+        // User needs recreation — delete first.
+        if is_alpine {
+            // Try deluser; ignore errors (e.g. group-only issues).
+            let _ = Command::new("deluser").arg("hrafn").output();
+            // Try delgroup separately; ignore errors if group doesn't exist.
+            let _ = Command::new("delgroup").arg("hrafn").output();
+        } else {
+            let output = Command::new("userdel")
+                .arg("hrafn")
+                .output()
+                .context("Failed to delete hrafn user")?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                bail!("Failed to delete hrafn user: {}", stderr.trim());
+            }
         }
     }
 
-    let is_alpine = Path::new("/etc/alpine-release").exists();
-
+    // Create the user.
     if is_alpine {
         let group_output = Command::new("getent").args(["group", "hrafn"]).output();
         let group_exists = group_output.map(|o| o.status.success()).unwrap_or(false);
@@ -880,6 +893,8 @@ fn ensure_hrafn_user() -> Result<()> {
                 "-S",
                 "-s",
                 "/sbin/nologin",
+                "-h",
+                "/nonexistent",
                 "-H",
                 "-D",
                 "-G",
@@ -905,7 +920,11 @@ fn ensure_hrafn_user() -> Result<()> {
         }
     }
 
-    println!("✅ Created system user: hrafn");
+    if user_exists {
+        println!("✅ Recreated system user: hrafn");
+    } else {
+        println!("✅ Created system user: hrafn");
+    }
     Ok(())
 }
 
@@ -1302,7 +1321,7 @@ fn install_linux_openrc(config: &Config) -> Result<()> {
     run_checked(Command::new("rc-update").args(["add", "hrafn", "default"]))?;
     println!("✅ Installed OpenRC service: /etc/init.d/hrafn");
     println!("   Config path: /etc/hrafn/config.toml");
-    println!("   Start with: sudo hrafn service start");
+    println!("   Start with: hrafn service start");
     let _ = config;
     Ok(())
 }
