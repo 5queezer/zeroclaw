@@ -970,8 +970,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
                 .route("/message:send", post(a2a::handle_message_send_rest))
                 .route("/message:stream", post(a2a::handle_message_stream_rest))
                 .route("/tasks", get(a2a::handle_tasks_list_rest))
-                .route("/tasks/{id}", get(a2a::handle_tasks_get_rest))
-                .route("/tasks/{id}:cancel", post(a2a::handle_tasks_cancel_rest))
+                .route("/tasks/{id}", get(a2a::handle_tasks_get_rest).post(a2a::handle_tasks_cancel_rest))
                 .route(
                     "/tasks/by-context/{context_id}",
                     get(a2a::handle_tasks_by_context_rest),

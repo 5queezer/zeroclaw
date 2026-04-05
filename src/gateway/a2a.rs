@@ -1368,11 +1368,16 @@ pub async fn handle_tasks_get_rest(
 }
 
 /// `POST /tasks/{id}:cancel` — v1.0 REST binding for CancelTask.
+/// The route captures the full `{id}:cancel` segment; the `:cancel` suffix
+/// is stripped at runtime because axum does not support `{param}:suffix` patterns.
 pub async fn handle_tasks_cancel_rest(
     State(state): State<AppState>,
     headers: HeaderMap,
-    axum::extract::Path(task_id): axum::extract::Path<String>,
+    axum::extract::Path(raw): axum::extract::Path<String>,
 ) -> impl IntoResponse {
+    // A2A spec uses gRPC-style `/tasks/{id}:cancel` but axum captures
+    // the full segment including the `:cancel` suffix.
+    let task_id = raw.strip_suffix(":cancel").unwrap_or(&raw).to_string();
     let (Some(_card), Some(task_store)) = (&state.a2a_agent_card, &state.a2a_task_store) else {
         return (
             StatusCode::NOT_FOUND,
