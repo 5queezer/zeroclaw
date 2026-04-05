@@ -64,6 +64,7 @@ static RUNTIME_PROXY_CLIENT_CACHE: OnceLock<RwLock<HashMap<String, reqwest::Clie
 ///
 /// Resolution order: `HRAFN_WORKSPACE` env → `active_workspace.toml` marker → `~/.hrafn/config.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     /// Workspace directory - computed from home, not serialized
     #[serde(skip)]
@@ -444,6 +445,7 @@ pub struct Config {
 /// separate memory, audit, secrets, and tool restrictions.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct WorkspaceConfig {
     /// Enable workspace isolation. Default: false.
     #[serde(default)]
@@ -488,6 +490,7 @@ impl Default for WorkspaceConfig {
 
 /// Named provider profile definition compatible with Codex app-server style config.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ModelProviderConfig {
     /// Optional provider type/name override (e.g. "openai", "openai-codex", or custom profile id).
     #[serde(default)]
@@ -526,6 +529,7 @@ pub struct ModelProviderConfig {
 
 /// Global delegate tool configuration for default timeout values.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct DelegateToolConfig {
     /// Default timeout in seconds for non-agentic sub-agent provider calls.
     /// Can be overridden per-agent in `[agents.<name>]` config.
@@ -552,6 +556,7 @@ impl Default for DelegateToolConfig {
 
 /// Configuration for a delegate sub-agent used by the `delegate` tool.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct DelegateAgentConfig {
     /// Provider name (e.g. "ollama", "openrouter", "anthropic")
     pub provider: String,
@@ -621,6 +626,7 @@ pub enum SwarmStrategy {
 
 /// Configuration for a swarm of coordinated agents.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SwarmConfig {
     /// Ordered list of agent names (must reference keys in `agents`).
     pub agents: Vec<String>,
@@ -743,6 +749,7 @@ impl std::fmt::Display for HardwareTransport {
 
 /// Wizard-driven hardware configuration for physical world interaction.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct HardwareConfig {
     /// Whether hardware access is enabled
     #[serde(default)]
@@ -823,6 +830,7 @@ fn default_google_stt_language_code() -> String {
 /// The top-level `api_url`, `model`, and `api_key` fields remain for backward
 /// compatibility with existing Groq-based configurations.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TranscriptionConfig {
     /// Enable voice transcription for channels that support it.
     #[serde(default)]
@@ -911,6 +919,7 @@ pub enum McpTransport {
 
 /// Configuration for a single external MCP server.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(deny_unknown_fields)]
 pub struct McpServerConfig {
     /// Display name used as a tool prefix (`<server>__<tool>`).
     pub name: String,
@@ -939,6 +948,7 @@ pub struct McpServerConfig {
 
 /// External MCP client configuration (`[mcp]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct McpConfig {
     /// Enable MCP tool loading.
     #[serde(default)]
@@ -970,6 +980,7 @@ impl Default for McpConfig {
 
 /// Verifiable Intent (VI) credential verification and issuance (`[verifiable_intent]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct VerifiableIntentConfig {
     /// Enable VI credential verification on commerce tool calls (default: false).
     #[serde(default)]
@@ -1002,6 +1013,7 @@ impl Default for VerifiableIntentConfig {
 /// When enabled, external processes/devices can connect via WebSocket
 /// at `/ws/nodes` and advertise their capabilities at runtime.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct NodesConfig {
     /// Enable dynamic node discovery endpoint.
     #[serde(default)]
@@ -1080,6 +1092,7 @@ fn default_piper_tts_api_url() -> String {
 
 /// Text-to-Speech configuration (`[tts]`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TtsConfig {
     /// Enable TTS synthesis.
     #[serde(default)]
@@ -1132,6 +1145,7 @@ impl Default for TtsConfig {
 
 /// OpenAI TTS provider configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct OpenAiTtsConfig {
     /// API key for OpenAI TTS.
     #[serde(default)]
@@ -1146,6 +1160,7 @@ pub struct OpenAiTtsConfig {
 
 /// ElevenLabs TTS provider configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ElevenLabsTtsConfig {
     /// API key for ElevenLabs.
     #[serde(default)]
@@ -1163,6 +1178,7 @@ pub struct ElevenLabsTtsConfig {
 
 /// Google Cloud TTS provider configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GoogleTtsConfig {
     /// API key for Google Cloud TTS.
     #[serde(default)]
@@ -1174,6 +1190,7 @@ pub struct GoogleTtsConfig {
 
 /// Edge TTS provider configuration (free, subprocess-based).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct EdgeTtsConfig {
     /// Path to the `edge-tts` binary (default `"edge-tts"`).
     #[serde(default = "default_edge_tts_binary_path")]
@@ -1182,6 +1199,7 @@ pub struct EdgeTtsConfig {
 
 /// Piper TTS provider configuration (local GPU-accelerated, OpenAI-compatible endpoint).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PiperTtsConfig {
     /// Base URL for the Piper TTS HTTP server (e.g. `"http://127.0.0.1:5000/v1/audio/speech"`).
     #[serde(default = "default_piper_tts_api_url")]
@@ -1220,6 +1238,7 @@ pub enum ToolFilterGroupMode {
 /// keywords = ["browse", "website", "url", "search"]
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ToolFilterGroup {
     /// Activation mode: `"always"` or `"dynamic"`.
     #[serde(default)]
@@ -1238,6 +1257,7 @@ pub struct ToolFilterGroup {
 
 /// OpenAI Whisper STT provider configuration (`[transcription.openai]`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct OpenAiSttConfig {
     /// OpenAI API key for Whisper transcription.
     #[serde(default)]
@@ -1249,6 +1269,7 @@ pub struct OpenAiSttConfig {
 
 /// Deepgram STT provider configuration (`[transcription.deepgram]`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct DeepgramSttConfig {
     /// Deepgram API key.
     #[serde(default)]
@@ -1260,6 +1281,7 @@ pub struct DeepgramSttConfig {
 
 /// AssemblyAI STT provider configuration (`[transcription.assemblyai]`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AssemblyAiSttConfig {
     /// AssemblyAI API key.
     #[serde(default)]
@@ -1268,6 +1290,7 @@ pub struct AssemblyAiSttConfig {
 
 /// Google Cloud Speech-to-Text provider configuration (`[transcription.google]`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GoogleSttConfig {
     /// Google Cloud API key.
     #[serde(default)]
@@ -1281,6 +1304,7 @@ pub struct GoogleSttConfig {
 ///
 /// Configures a self-hosted STT endpoint. Can be on localhost, a private network host, or any reachable URL.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct LocalWhisperConfig {
     /// HTTP or HTTPS endpoint URL, e.g. `"http://10.10.0.1:8001/v1/transcribe"`.
     pub url: String,
@@ -1310,6 +1334,7 @@ fn default_local_whisper_timeout_secs() -> u64 {
 
 /// Agent orchestration configuration (`[agent]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AgentConfig {
     /// When true: bootstrap_max_chars=6000, rag_chunk_limit=2. Use for 13B or smaller models.
     #[serde(default)]
@@ -1448,6 +1473,7 @@ impl Default for AgentConfig {
 /// behavior. When set, they extend — not replace — the existing timeout
 /// and loop-detection subsystems.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PacingConfig {
     /// Per-step timeout in seconds: the maximum time allowed for a single
     /// LLM inference turn, independent of the total message budget.
@@ -1539,6 +1565,7 @@ fn parse_skills_prompt_injection_mode(raw: &str) -> Option<SkillsPromptInjection
 
 /// Skills loading configuration (`[skills]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(deny_unknown_fields)]
 pub struct SkillsConfig {
     /// Enable loading and syncing the community open-skills repository.
     /// Default: `false` (opt-in).
@@ -1566,7 +1593,7 @@ pub struct SkillsConfig {
 
 /// Autonomous skill creation configuration (`[skills.skill_creation]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SkillCreationConfig {
     /// Enable automatic skill creation after successful multi-step tasks.
     /// Default: `false`.
@@ -1591,6 +1618,7 @@ impl Default for SkillCreationConfig {
 
 /// Skill self-improvement configuration (`[skills.auto_improve]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SkillImprovementConfig {
     /// Enable automatic skill improvement after successful skill usage.
     /// Default: `true`.
@@ -1617,6 +1645,7 @@ impl Default for SkillImprovementConfig {
 
 /// Pipeline tool configuration (`[pipeline]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PipelineConfig {
     /// Enable the `execute_pipeline` meta-tool.
     /// Default: `false`.
@@ -1648,6 +1677,7 @@ impl Default for PipelineConfig {
 
 /// Multimodal (image) handling configuration (`[multimodal]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct MultimodalConfig {
     /// Maximum number of image attachments accepted per request.
     #[serde(default = "default_multimodal_max_images")]
@@ -1707,6 +1737,7 @@ impl Default for MultimodalConfig {
 /// annotated, and videos are summarised.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct MediaPipelineConfig {
     /// Master toggle for the media pipeline (default: false).
     #[serde(default)]
@@ -1742,6 +1773,7 @@ impl Default for MediaPipelineConfig {
 ///
 /// Supports `"openclaw"` (default) or `"aieos"` identity documents.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct IdentityConfig {
     /// Identity format: "openclaw" (default) or "aieos"
     #[serde(default = "default_identity_format")]
@@ -1772,6 +1804,7 @@ impl Default for IdentityConfig {
 
 /// Cost tracking and budget enforcement configuration (`[cost]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CostConfig {
     /// Enable cost tracking (default: true)
     #[serde(default = "default_cost_enabled")]
@@ -1804,6 +1837,7 @@ pub struct CostConfig {
 
 /// Configuration for cost enforcement behavior when budget limits are reached.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CostEnforcementConfig {
     /// Enforcement mode: "warn", "block", or "route_down".
     #[serde(default = "default_cost_enforcement_mode")]
@@ -1836,6 +1870,7 @@ impl Default for CostEnforcementConfig {
 
 /// Per-model pricing entry (USD per 1M tokens).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ModelPricing {
     /// Input price per 1M tokens
     #[serde(default)]
@@ -1958,6 +1993,7 @@ fn get_default_pricing() -> std::collections::HashMap<String, ModelPricing> {
 ///
 /// Boards become agent tools when enabled.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PeripheralsConfig {
     /// Enable peripheral support (boards become agent tools)
     #[serde(default)]
@@ -1973,6 +2009,7 @@ pub struct PeripheralsConfig {
 
 /// Configuration for a single peripheral board (e.g. STM32, RPi GPIO).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PeripheralBoardConfig {
     /// Board type: "nucleo-f401re", "rpi-gpio", "esp32", etc.
     pub board: String,
@@ -2012,6 +2049,7 @@ impl Default for PeripheralBoardConfig {
 ///
 /// Controls the HTTP gateway for webhook and pairing endpoints.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct GatewayConfig {
     /// Gateway port (default: 42617)
@@ -2139,6 +2177,7 @@ impl Default for GatewayConfig {
 
 /// Pairing dashboard configuration (`[gateway.pairing_dashboard]`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PairingDashboardConfig {
     /// Length of pairing codes (default: 8)
     #[serde(default = "default_pairing_code_length")]
@@ -2187,6 +2226,7 @@ impl Default for PairingDashboardConfig {
 
 /// TLS configuration for the gateway server (`[gateway.tls]`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GatewayTlsConfig {
     /// Enable TLS for the gateway (default: false).
     #[serde(default)]
@@ -2202,6 +2242,7 @@ pub struct GatewayTlsConfig {
 
 /// Client certificate authentication (mTLS) configuration (`[gateway.tls.client_auth]`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GatewayClientAuthConfig {
     /// Enable client certificate verification (default: false).
     #[serde(default)]
@@ -2219,6 +2260,7 @@ pub struct GatewayClientAuthConfig {
 
 /// Secure transport configuration for inter-node communication (`[node_transport]`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct NodeTransportConfig {
     /// Enable the secure transport layer.
     #[serde(default = "default_node_transport_enabled")]
@@ -2284,6 +2326,7 @@ impl Default for NodeTransportConfig {
 ///
 /// Provides access to 1000+ OAuth-connected tools via the Composio platform.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ComposioConfig {
     /// Enable Composio integration for 1000+ OAuth tools
     #[serde(default, alias = "enable")]
@@ -2317,6 +2360,7 @@ impl Default for ComposioConfig {
 /// Provides access to Outlook mail, Teams messages, Calendar events,
 /// OneDrive files, and SharePoint search.
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Microsoft365Config {
     /// Enable Microsoft 365 integration
     #[serde(default, alias = "enable")]
@@ -2386,6 +2430,7 @@ impl Default for Microsoft365Config {
 
 /// Secrets encryption configuration (`[secrets]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SecretsConfig {
     /// Enable encryption for API keys and tokens in config.toml
     #[serde(default = "default_true")]
@@ -2404,6 +2449,7 @@ impl Default for SecretsConfig {
 ///
 /// Delegates OS-level mouse, keyboard, and screenshot actions to a local sidecar.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct BrowserComputerUseConfig {
     /// Sidecar endpoint for computer-use actions (OS-level mouse/keyboard/screenshot)
     #[serde(default = "default_browser_computer_use_endpoint")]
@@ -2454,6 +2500,7 @@ impl Default for BrowserComputerUseConfig {
 ///
 /// Controls the `browser_open` tool and browser automation backends.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct BrowserConfig {
     /// Enable `browser_open` tool (opens URLs in the system browser without scraping)
     #[serde(default)]
@@ -2512,6 +2559,7 @@ impl Default for BrowserConfig {
 /// for all public hosts, which is the default). If `allowed_domains` is empty, all
 /// requests are rejected.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct HttpRequestConfig {
     /// Enable `http_request` tool for API interactions
     #[serde(default)]
@@ -2560,6 +2608,7 @@ fn default_http_timeout_secs() -> u64 {
 /// for all public hosts). `blocked_domains` takes priority over `allowed_domains`.
 /// If `allowed_domains` is empty, all requests are rejected (deny-by-default).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct WebFetchConfig {
     /// Enable `web_fetch` tool for fetching web page content
     #[serde(default)]
@@ -2602,6 +2651,7 @@ pub enum FirecrawlMode {
 /// body shorter than 100 characters suggesting a JS-only page), the tool
 /// falls back to the Firecrawl API for stealth content extraction.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct FirecrawlConfig {
     /// Enable Firecrawl fallback
     #[serde(default)]
@@ -2671,6 +2721,7 @@ impl Default for WebFetchConfig {
 /// processes it, giving the LLM context about linked pages without an
 /// explicit tool call.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct LinkEnricherConfig {
     /// Enable the link enricher pipeline stage (default: false)
     #[serde(default)]
@@ -2708,6 +2759,7 @@ impl Default for LinkEnricherConfig {
 /// Uses text-based browsers (lynx, links, w3m) to render web pages as plain
 /// text. Designed for headless/SSH environments without graphical browsers.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TextBrowserConfig {
     /// Enable `text_browser` tool
     #[serde(default)]
@@ -2742,6 +2794,7 @@ impl Default for TextBrowserConfig {
 /// tunable is `timeout_secs` — the maximum wall-clock time a single
 /// shell command may run before it is killed.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ShellToolConfig {
     /// Maximum shell command execution time in seconds (default: 60).
     #[serde(default = "default_shell_tool_timeout_secs")]
@@ -2764,6 +2817,7 @@ impl Default for ShellToolConfig {
 
 /// Web search tool configuration (`[web_search]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct WebSearchConfig {
     /// Enable `web_search_tool` for web searches
     #[serde(default)]
@@ -2814,6 +2868,7 @@ impl Default for WebSearchConfig {
 
 /// Project delivery intelligence configuration (`[project_intel]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectIntelConfig {
     /// Enable the project_intel tool. Default: false.
     #[serde(default)]
@@ -2872,6 +2927,7 @@ impl Default for ProjectIntelConfig {
 
 /// Backup tool configuration (`[backup]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct BackupConfig {
     /// Enable the `backup` tool.
     #[serde(default = "default_true")]
@@ -2935,6 +2991,7 @@ impl Default for BackupConfig {
 
 /// Data retention and purge configuration (`[data_retention]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct DataRetentionConfig {
     /// Enable the `data_management` tool.
     #[serde(default)]
@@ -3018,6 +3075,7 @@ pub const DEFAULT_GWS_SERVICES: &[&str] = &[
 /// set `enabled = false`). No data migration is required; the tool simply stops
 /// being registered.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GoogleWorkspaceAllowedOperation {
     /// Google Workspace service ID (for example `gmail` or `drive`).
     pub service: String,
@@ -3059,6 +3117,7 @@ pub struct GoogleWorkspaceAllowedOperation {
 /// set `enabled = false`). No data migration is required; the tool simply stops
 /// being registered.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GoogleWorkspaceConfig {
     /// Enable the `google_workspace` tool. Default: `false`.
     #[serde(default)]
@@ -3137,6 +3196,7 @@ impl Default for GoogleWorkspaceConfig {
 /// Knowledge graph configuration for capturing and reusing expertise.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct KnowledgeConfig {
     /// Enable the knowledge graph tool. Default: false.
     #[serde(default)]
@@ -3186,6 +3246,7 @@ impl Default for KnowledgeConfig {
 /// When enabled, the `linkedin` tool is registered in the agent tool surface.
 /// Requires `LINKEDIN_*` credentials in the workspace `.env` file.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct LinkedInConfig {
     /// Enable the LinkedIn tool.
     #[serde(default)]
@@ -3221,6 +3282,7 @@ fn default_linkedin_api_version() -> String {
 
 /// Plugin system configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PluginsConfig {
     /// Enable the plugin system (default: false)
     #[serde(default)]
@@ -3246,6 +3308,7 @@ pub struct PluginsConfig {
 /// In `permissive` mode, unsigned or untrusted plugins produce warnings but are
 /// still loaded. In `disabled` mode (the default), no signature checking occurs.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PluginSecurityConfig {
     /// Signature enforcement mode: "disabled", "permissive", or "strict".
     #[serde(default = "default_signature_mode")]
@@ -3293,6 +3356,7 @@ impl Default for PluginsConfig {
 /// The agent reads this via the `linkedin get_content_strategy` action to know
 /// what feeds to check, which repos to highlight, and how to write posts.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct LinkedInContentConfig {
     /// RSS feed URLs to monitor for topic inspiration (titles only).
     #[serde(default)]
@@ -3321,6 +3385,7 @@ pub struct LinkedInContentConfig {
 
 /// Image generation configuration for LinkedIn posts (`[linkedin.image]`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct LinkedInImageConfig {
     /// Enable image generation for posts.
     #[serde(default)]
@@ -3394,6 +3459,7 @@ impl Default for LinkedInImageConfig {
 
 /// Stability AI image generation settings (`[linkedin.image.stability]`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ImageProviderStabilityConfig {
     /// Environment variable name holding the API key.
     #[serde(default = "default_stability_api_key_env")]
@@ -3421,6 +3487,7 @@ impl Default for ImageProviderStabilityConfig {
 
 /// Google Imagen (Vertex AI) settings (`[linkedin.image.imagen]`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ImageProviderImagenConfig {
     /// Environment variable name holding the API key.
     #[serde(default = "default_imagen_api_key_env")]
@@ -3455,6 +3522,7 @@ impl Default for ImageProviderImagenConfig {
 
 /// OpenAI DALL-E settings (`[linkedin.image.dalle]`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ImageProviderDalleConfig {
     /// Environment variable name holding the OpenAI API key.
     #[serde(default = "default_dalle_api_key_env")]
@@ -3489,6 +3557,7 @@ impl Default for ImageProviderDalleConfig {
 
 /// Flux (fal.ai) image generation settings (`[linkedin.image.flux]`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ImageProviderFluxConfig {
     /// Environment variable name holding the fal.ai API key.
     #[serde(default = "default_flux_api_key_env")]
@@ -3522,6 +3591,7 @@ impl Default for ImageProviderFluxConfig {
 /// fal.ai's synchronous API (Flux / Nano Banana models) and saves them
 /// to the workspace `images/` directory.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ImageGenConfig {
     /// Enable the standalone image generation tool. Default: false.
     #[serde(default)]
@@ -3562,6 +3632,7 @@ impl Default for ImageGenConfig {
 /// binary's own OAuth session (Max subscription) by default — no API key
 /// needed unless `env_passthrough` includes `ANTHROPIC_API_KEY`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ClaudeCodeConfig {
     /// Enable the `claude_code` tool
     #[serde(default)]
@@ -3616,6 +3687,7 @@ impl Default for ClaudeCodeConfig {
 /// execution events back to Hrafn's gateway, updating a Slack message
 /// in-place with progress plus an SSH handoff link.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ClaudeCodeRunnerConfig {
     /// Enable the `claude_code_runner` tool
     #[serde(default)]
@@ -3658,6 +3730,7 @@ impl Default for ClaudeCodeRunnerConfig {
 /// binary's own session by default — no API key needed unless
 /// `env_passthrough` includes `OPENAI_API_KEY`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CodexCliConfig {
     /// Enable the `codex_cli` tool
     #[serde(default)]
@@ -3700,6 +3773,7 @@ impl Default for CodexCliConfig {
 /// binary's own session by default — no API key needed unless
 /// `env_passthrough` includes `GOOGLE_API_KEY`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GeminiCliConfig {
     /// Enable the `gemini_cli` tool
     #[serde(default)]
@@ -3742,6 +3816,7 @@ impl Default for GeminiCliConfig {
 /// binary's own session by default — no API key needed unless
 /// `env_passthrough` includes provider-specific keys.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct OpenCodeCliConfig {
     /// Enable the `opencode_cli` tool
     #[serde(default)]
@@ -3780,6 +3855,7 @@ impl Default for OpenCodeCliConfig {
 
 /// A2A (Agent-to-Agent) protocol configuration (`[a2a]`).
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct A2aConfig {
     /// Enable the A2A protocol server and client tool.
     #[serde(default)]
@@ -3891,6 +3967,7 @@ pub enum ProxyScope {
 
 /// Proxy configuration for outbound HTTP/HTTPS/SOCKS5 traffic (`[proxy]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ProxyConfig {
     /// Enable proxy support for selected scope.
     #[serde(default)]
@@ -4831,6 +4908,7 @@ fn parse_proxy_enabled(raw: &str) -> Option<bool> {
 
 /// Persistent storage configuration (`[storage]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct StorageConfig {
     /// Storage provider settings (e.g. sqlite, postgres).
     #[serde(default)]
@@ -4839,6 +4917,7 @@ pub struct StorageConfig {
 
 /// Wrapper for the storage provider configuration section.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct StorageProviderSection {
     /// Storage provider backend settings.
     #[serde(default)]
@@ -4847,6 +4926,7 @@ pub struct StorageProviderSection {
 
 /// Storage provider backend configuration for remote storage backends.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct StorageProviderConfig {
     /// Storage engine key (e.g. "sqlite", "qdrant").
     #[serde(default)]
@@ -4902,6 +4982,7 @@ impl Default for StorageProviderConfig {
 /// Configuration for Qdrant vector database backend (`[memory.qdrant]`).
 /// Used when `[memory].backend = "qdrant"`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct QdrantConfig {
     /// Qdrant server URL (e.g. "http://localhost:6333").
     /// Falls back to `QDRANT_URL` env var if not set.
@@ -4923,6 +5004,7 @@ fn default_qdrant_collection() -> String {
 
 /// MuninnDB cognitive memory backend configuration (`[memory.muninndb]`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct MuninndbConfig {
     /// MuninnDB REST API URL (e.g. "http://127.0.0.1:8475").
     /// Falls back to `MUNINNDB_URL` env var, or default "http://127.0.0.1:8475".
@@ -4976,6 +5058,7 @@ pub enum SearchMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct MemoryConfig {
     /// "sqlite" | "lucid" | "qdrant" | "markdown" | "none" (`none` = explicit no-op memory)
@@ -5109,6 +5192,7 @@ pub struct MemoryConfig {
 
 /// Memory policy configuration (`[memory.policy]` section).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct MemoryPolicyConfig {
     /// Maximum entries per namespace (0 = unlimited).
     #[serde(default)]
@@ -5235,6 +5319,7 @@ impl Default for MemoryConfig {
 
 /// Observability backend configuration (`[observability]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ObservabilityConfig {
     /// "none" | "log" | "verbose" | "prometheus" | "otel"
     pub backend: String,
@@ -5289,6 +5374,7 @@ fn default_runtime_trace_max_entries() -> usize {
 // ── Hooks ────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct HooksConfig {
     /// Enable lifecycle hook execution.
     ///
@@ -5309,6 +5395,7 @@ impl Default for HooksConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(deny_unknown_fields)]
 pub struct BuiltinHooksConfig {
     /// Enable the command-logger hook (logs tool calls for auditing).
     pub command_logger: bool,
@@ -5326,6 +5413,7 @@ pub struct BuiltinHooksConfig {
 /// a tool call matches one of the configured patterns. Useful for
 /// centralised audit logging, SIEM ingestion, or compliance pipelines.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct WebhookAuditConfig {
     /// Enable the webhook-audit hook. Default: `false`.
     #[serde(default)]
@@ -5373,7 +5461,7 @@ impl Default for WebhookAuditConfig {
 /// risk approval gates, and per-policy budgets.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct AutonomyConfig {
     /// Autonomy level: `read_only`, `supervised` (default), or `full`.
     pub level: AutonomyLevel,
@@ -5536,6 +5624,7 @@ impl Default for AutonomyConfig {
 
 /// Runtime adapter configuration (`[runtime]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RuntimeConfig {
     /// Runtime kind (`native` | `docker`).
     #[serde(default = "default_runtime_kind")]
@@ -5558,6 +5647,7 @@ pub struct RuntimeConfig {
 
 /// Docker runtime configuration (`[runtime.docker]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct DockerRuntimeConfig {
     /// Runtime image used to execute shell commands.
     #[serde(default = "default_docker_image")]
@@ -5639,6 +5729,7 @@ impl Default for RuntimeConfig {
 ///
 /// Controls provider retries, fallback chains, API key rotation, and channel restart backoff.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ReliabilityConfig {
     /// Retries per provider before failing over.
     #[serde(default = "default_provider_retries")]
@@ -5715,6 +5806,7 @@ impl Default for ReliabilityConfig {
 
 /// Scheduler configuration for periodic task execution (`[scheduler]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SchedulerConfig {
     /// Enable the built-in scheduler loop.
     #[serde(default = "default_scheduler_enabled")]
@@ -5767,6 +5859,7 @@ impl Default for SchedulerConfig {
 ///
 /// Usage: pass `hint:reasoning` as the model parameter to route the request.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ModelRouteConfig {
     /// Task hint name (e.g. "reasoning", "fast", "code", "summarize")
     pub hint: String,
@@ -5794,6 +5887,7 @@ pub struct ModelRouteConfig {
 /// embedding_model = "hint:semantic"
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct EmbeddingRouteConfig {
     /// Route hint name (e.g. "semantic", "archive", "faq")
     pub hint: String,
@@ -5814,6 +5908,7 @@ pub struct EmbeddingRouteConfig {
 /// Automatic query classification — classifies user messages by keyword/pattern
 /// and routes to the appropriate model hint. Disabled by default.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct QueryClassificationConfig {
     /// Enable automatic query classification. Default: `false`.
     #[serde(default)]
@@ -5825,6 +5920,7 @@ pub struct QueryClassificationConfig {
 
 /// A single classification rule mapping message patterns to a model hint.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ClassificationRule {
     /// Must match a `[[model_routes]]` hint value.
     pub hint: String,
@@ -5849,6 +5945,7 @@ pub struct ClassificationRule {
 
 /// Heartbeat configuration for periodic health pings (`[heartbeat]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct HeartbeatConfig {
     /// Enable periodic heartbeat pings. Default: `false`.
@@ -5951,6 +6048,7 @@ impl Default for HeartbeatConfig {
 
 /// Cron job configuration (`[cron]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CronConfig {
     /// Enable the cron subsystem. Default: `true`.
     #[serde(default = "default_true")]
@@ -5980,6 +6078,7 @@ pub struct CronConfig {
 
 /// A declarative cron job definition for the `[[cron.jobs]]` config array.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CronJobDecl {
     /// Stable identifier used for merge semantics across syncs.
     pub id: String,
@@ -6032,6 +6131,7 @@ pub enum CronScheduleDecl {
 
 /// Delivery configuration for declarative cron jobs.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct DeliveryConfigDecl {
     /// Delivery mode: `"none"` or `"announce"`.
     #[serde(default = "default_delivery_mode")]
@@ -6076,6 +6176,7 @@ impl Default for CronConfig {
 ///
 /// Supported providers: `"none"` (default), `"cloudflare"`, `"tailscale"`, `"ngrok"`, `"openvpn"`, `"pinggy"`, `"custom"`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TunnelConfig {
     /// Tunnel provider: `"none"`, `"cloudflare"`, `"tailscale"`, `"ngrok"`, `"openvpn"`, `"pinggy"`, or `"custom"`. Default: `"none"`.
     pub provider: String,
@@ -6120,12 +6221,14 @@ impl Default for TunnelConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CloudflareTunnelConfig {
     /// Cloudflare Tunnel token (from Zero Trust dashboard)
     pub token: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TailscaleTunnelConfig {
     /// Use Tailscale Funnel (public internet) vs Serve (tailnet only)
     #[serde(default)]
@@ -6135,6 +6238,7 @@ pub struct TailscaleTunnelConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct NgrokTunnelConfig {
     /// ngrok auth token
     pub auth_token: String,
@@ -6150,6 +6254,7 @@ pub struct NgrokTunnelConfig {
 ///
 /// Defaults: `connect_timeout_secs = 30`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct OpenVpnTunnelConfig {
     /// Path to `.ovpn` configuration file (must not be empty).
     pub config_file: String,
@@ -6173,6 +6278,7 @@ fn default_openvpn_timeout() -> u64 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PinggyTunnelConfig {
     /// Pinggy access token (optional — free tier works without one).
     #[serde(default)]
@@ -6183,6 +6289,7 @@ pub struct PinggyTunnelConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CustomTunnelConfig {
     /// Command template to start the tunnel. Use {port} and {host} placeholders.
     /// Example: "bore local {port} --to bore.pub"
@@ -6218,6 +6325,7 @@ impl<T: ChannelConfig> crate::config::traits::ConfigHandle for ConfigWrapper<T> 
 /// setting it to `Some(...)` enables that channel.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ChannelsConfig {
     /// Enable the CLI interactive channel. Default: `true`.
     #[serde(default = "default_true")]
@@ -6520,6 +6628,7 @@ fn default_matrix_draft_update_interval_ms() -> u64 {
 
 /// Telegram bot channel configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TelegramConfig {
     /// Telegram Bot API token (from @BotFather).
     pub bot_token: String,
@@ -6561,6 +6670,7 @@ impl ChannelConfig for TelegramConfig {
 
 /// Discord bot channel configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct DiscordConfig {
     /// Discord bot token (from Discord Developer Portal).
     pub bot_token: String,
@@ -6615,6 +6725,7 @@ impl ChannelConfig for DiscordConfig {
 
 /// Discord history channel — logs ALL messages to discord.db and forwards @mentions to the agent.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct DiscordHistoryConfig {
     /// Discord bot token (from Discord Developer Portal).
     pub bot_token: String,
@@ -6648,6 +6759,7 @@ impl ChannelConfig for DiscordHistoryConfig {
 
 /// Slack bot channel configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct SlackConfig {
     /// Slack bot OAuth token (xoxb-...).
@@ -6713,6 +6825,7 @@ impl ChannelConfig for SlackConfig {
 
 /// Mattermost bot channel configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct MattermostConfig {
     /// Mattermost server URL (e.g. `"https://mattermost.example.com"`).
     pub url: String,
@@ -6755,6 +6868,7 @@ impl ChannelConfig for MattermostConfig {
 /// Receives messages via HTTP POST and sends replies to a configurable outbound URL.
 /// This is the "universal adapter" for any system that supports webhooks.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct WebhookConfig {
     /// Port to listen on for incoming webhooks.
     pub port: u16,
@@ -6785,6 +6899,7 @@ impl ChannelConfig for WebhookConfig {
 
 /// iMessage channel configuration (macOS only).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct IMessageConfig {
     /// Allowed iMessage contacts (phone numbers or email addresses). Empty = deny all.
     pub allowed_contacts: Vec<String>,
@@ -6801,6 +6916,7 @@ impl ChannelConfig for IMessageConfig {
 
 /// Matrix channel configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct MatrixConfig {
     /// Matrix homeserver URL (e.g. `"https://matrix.org"`).
     pub homeserver: String,
@@ -6850,6 +6966,7 @@ impl ChannelConfig for MatrixConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SignalConfig {
     /// Base URL for the signal-cli HTTP daemon (e.g. "http://127.0.0.1:8686").
     pub http_url: String,
@@ -6919,6 +7036,7 @@ pub enum WhatsAppChatPolicy {
 ///
 /// Set `phone_number_id` for Cloud API mode, or `session_path` for Web mode.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct WhatsAppConfig {
     /// Access token from Meta Business Suite (Cloud API mode)
     #[serde(default)]
@@ -7001,6 +7119,7 @@ impl ChannelConfig for WhatsAppConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct LinqConfig {
     /// Linq Partner API token (Bearer auth)
     pub api_token: String,
@@ -7025,6 +7144,7 @@ impl ChannelConfig for LinqConfig {
 
 /// WATI WhatsApp Business API channel configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct WatiConfig {
     /// WATI API token (Bearer auth).
     pub api_token: String,
@@ -7058,6 +7178,7 @@ impl ChannelConfig for WatiConfig {
 
 /// Nextcloud Talk bot configuration (webhook receive + OCS send API).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct NextcloudTalkConfig {
     /// Nextcloud base URL (e.g. "https://cloud.example.com").
     pub base_url: String,
@@ -7128,6 +7249,7 @@ impl WhatsAppConfig {
 /// Subscribes to MQTT topics and dispatches incoming messages
 /// to the SOP engine for processing.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct MqttConfig {
     /// MQTT broker URL (e.g., `mqtt://localhost:1883` or `mqtts://broker.example.com:8883`).
     /// Use `mqtt://` for plain connections or `mqtts://` for TLS.
@@ -7225,6 +7347,7 @@ fn default_mqtt_keep_alive_secs() -> u64 {
 
 /// IRC channel configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct IrcConfig {
     /// IRC server hostname
     pub server: String,
@@ -7279,6 +7402,7 @@ pub enum LarkReceiveMode {
 /// Lark/Feishu configuration for messaging integration.
 /// Lark is the international version; Feishu is the Chinese version.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct LarkConfig {
     /// App ID from Lark/Feishu developer console
     pub app_id: String,
@@ -7324,6 +7448,7 @@ impl ChannelConfig for LarkConfig {
 
 /// Feishu configuration for messaging integration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct FeishuConfig {
     /// App ID from Feishu developer console
     pub app_id: String,
@@ -7364,6 +7489,7 @@ impl ChannelConfig for FeishuConfig {
 
 /// Security configuration for sandboxing, resource limits, and audit logging
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SecurityConfig {
     /// Global security enable switch. When set to `false`, all security restrictions
     /// are disabled (sandboxing, filesystem limits, command allowlists, etc.).
@@ -7425,6 +7551,7 @@ impl Default for SecurityConfig {
 /// Enables registration and authentication via hardware security keys
 /// (YubiKey, SoloKey, etc.) and platform authenticators (Touch ID, Windows Hello).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct WebAuthnConfig {
     /// Enable WebAuthn authentication. Default: false.
     #[serde(default)]
@@ -7740,6 +7867,7 @@ pub struct NevisRoleMappingConfig {
 
 /// Sandbox configuration for OS-level isolation
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SandboxConfig {
     /// Enable sandboxing (None = auto-detect, Some = explicit)
     #[serde(default)]
@@ -7788,6 +7916,7 @@ pub enum SandboxBackend {
 
 /// Resource limits for command execution
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ResourceLimitsConfig {
     /// Maximum memory in MB per command
     #[serde(default = "default_max_memory_mb")]
@@ -7838,6 +7967,7 @@ impl Default for ResourceLimitsConfig {
 /// Prevents unbounded resource consumption from runaway shell processes and
 /// inter-agent relay loops (ref: arXiv:2602.20021, Case Study #4).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ProcessLimitsConfig {
     /// Maximum wall-clock time (seconds) a shell process may run before being
     /// killed. Caps the per-command timeout regardless of `shell_tool.timeout_secs`.
@@ -7878,6 +8008,7 @@ impl Default for ProcessLimitsConfig {
 
 /// Audit logging configuration
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AuditConfig {
     /// Enable audit logging
     #[serde(default = "default_audit_enabled")]
@@ -7921,6 +8052,7 @@ impl Default for AuditConfig {
 
 /// DingTalk configuration for Stream Mode messaging
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct DingTalkConfig {
     /// Client ID (AppKey) from DingTalk developer console
     pub client_id: String,
@@ -7946,6 +8078,7 @@ impl ChannelConfig for DingTalkConfig {
 
 /// WeCom (WeChat Enterprise) Bot Webhook configuration
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct WeComConfig {
     /// Webhook key from WeCom Bot configuration
     pub webhook_key: String,
@@ -7965,6 +8098,7 @@ impl ChannelConfig for WeComConfig {
 
 /// QQ Official Bot configuration (Tencent QQ Bot SDK)
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct QQConfig {
     /// App ID from QQ Bot developer console
     pub app_id: String,
@@ -7990,6 +8124,7 @@ impl ChannelConfig for QQConfig {
 
 /// X/Twitter channel configuration (Twitter API v2)
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TwitterConfig {
     /// Twitter API v2 Bearer Token (OAuth 2.0)
     pub bearer_token: String,
@@ -8009,6 +8144,7 @@ impl ChannelConfig for TwitterConfig {
 
 /// Mochat channel configuration (Mochat customer service API)
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct MochatConfig {
     /// Mochat API base URL
     pub api_url: String,
@@ -8037,6 +8173,7 @@ impl ChannelConfig for MochatConfig {
 
 /// Reddit channel configuration (OAuth2 bot).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RedditConfig {
     /// Reddit OAuth2 client ID.
     pub client_id: String,
@@ -8063,6 +8200,7 @@ impl ChannelConfig for RedditConfig {
 
 /// Bluesky channel configuration (AT Protocol).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct BlueskyConfig {
     /// Bluesky handle (e.g. `"mybot.bsky.social"`).
     pub handle: String,
@@ -8086,6 +8224,7 @@ impl ChannelConfig for BlueskyConfig {
 /// existing transcription API.
 #[cfg(feature = "voice-wake")]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct VoiceWakeConfig {
     /// Wake word phrase to listen for (case-insensitive substring match).
     /// Default: `"hey hrafn"`.
@@ -8150,6 +8289,7 @@ impl ChannelConfig for VoiceWakeConfig {
 /// Nostr channel configuration (NIP-04 + NIP-17 private messages)
 #[cfg(feature = "channel-nostr")]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct NostrConfig {
     /// Private key in hex or nsec bech32 format
     pub private_key: String,
@@ -8189,6 +8329,7 @@ pub fn default_nostr_relays() -> Vec<String> {
 /// and exposes a `notion` tool for querying, reading, creating, and updating pages.
 /// Requires `api_key` (or the `NOTION_API_KEY` env var) and `database_id`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct NotionConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -8261,6 +8402,7 @@ impl Default for NotionConfig {
 /// Jira Cloud uses HTTP Basic auth: `email` + `api_token`.
 /// `api_token` is stored encrypted at rest; set it here or via `JIRA_API_TOKEN`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct JiraConfig {
     /// Enable the `jira` tool. Default: `false`.
     #[serde(default)]
@@ -8309,6 +8451,7 @@ impl Default for JiraConfig {
 /// Controls the read-only cloud transformation analysis tools:
 /// IaC review, migration assessment, cost analysis, and architecture review.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CloudOpsConfig {
     /// Enable cloud operations tools. Default: false.
     #[serde(default)]
@@ -8429,6 +8572,7 @@ fn default_conversational_ai_timeout_secs() -> u64 {
 /// **Status: Reserved for future use.** This configuration is parsed but not yet
 /// consumed by the runtime. Setting `enabled = true` will produce a startup warning.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ConversationalAiConfig {
     /// Enable conversational AI features. Default: false.
     #[serde(default)]
@@ -8490,6 +8634,7 @@ impl Default for ConversationalAiConfig {
 
 /// Managed Cybersecurity Service (MCSS) dashboard agent configuration (`[security_ops]`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SecurityOpsConfig {
     /// Enable security operations tools.
     #[serde(default)]
@@ -8649,6 +8794,7 @@ fn default_config_and_workspace_dirs() -> Result<(PathBuf, PathBuf)> {
 const ACTIVE_WORKSPACE_STATE_FILE: &str = "active_workspace.toml";
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ActiveWorkspaceState {
     config_dir: String,
 }
@@ -9192,29 +9338,6 @@ impl Config {
             // `auto_approve` in the approval decision (see approval/mod.rs).
             config.autonomy.ensure_default_auto_approve();
 
-            // Detect unknown top-level config keys by comparing the raw
-            // TOML table keys against what Config actually deserializes.
-            // This replaces the previous serde_ignored-based approach which
-            // had false-positive issues with #[serde(default)] nested structs.
-            if let Ok(raw) = contents.parse::<toml::Table>() {
-                // Build the set of known top-level keys from a default Config
-                // serialization round-trip.  This is computed once and cached.
-                static KNOWN_KEYS: OnceLock<Vec<String>> = OnceLock::new();
-                let known = KNOWN_KEYS.get_or_init(|| {
-                    toml::to_string(&Config::default())
-                        .ok()
-                        .and_then(|s| s.parse::<toml::Table>().ok())
-                        .map(|t| t.keys().cloned().collect())
-                        .unwrap_or_default()
-                });
-                for key in raw.keys() {
-                    if !known.contains(key) {
-                        tracing::warn!(
-                            "Unknown config key ignored: \"{key}\". Check config.toml for typos or deprecated options.",
-                        );
-                    }
-                }
-            }
             // Set computed paths that are skipped during serialization
             config.config_path = config_path.clone();
             config.workspace_dir = workspace_dir;
@@ -11190,6 +11313,7 @@ async fn sync_directory(path: &Path) -> Result<()> {
 /// `sop::types` (re-exported via `sop::SopExecutionMode`). To avoid circular
 /// module references, config stores it using the same enum definition.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SopConfig {
     /// Directory containing SOP definitions (subdirs with SOP.toml + SOP.md).
     /// Falls back to `<workspace>/sops` when omitted.
@@ -11531,8 +11655,6 @@ recipient = "42"
     #[test]
     async fn config_defaults_cron_when_section_missing() {
         let toml_str = r#"
-workspace_dir = "/tmp/workspace"
-config_path = "/tmp/config.toml"
 default_temperature = 0.7
 "#;
 
@@ -11558,8 +11680,6 @@ default_temperature = 0.7
     #[test]
     async fn search_mode_config_deserialization() {
         let toml_str = r#"
-workspace_dir = "/tmp/workspace"
-config_path = "/tmp/config.toml"
 default_temperature = 0.7
 
 [memory]
@@ -11571,8 +11691,6 @@ search_mode = "bm25"
         assert_eq!(parsed.memory.search_mode, SearchMode::Bm25);
 
         let toml_str_embedding = r#"
-workspace_dir = "/tmp/workspace"
-config_path = "/tmp/config.toml"
 default_temperature = 0.7
 
 [memory]
@@ -11584,8 +11702,6 @@ search_mode = "embedding"
         assert_eq!(parsed.memory.search_mode, SearchMode::Embedding);
 
         let toml_str_hybrid = r#"
-workspace_dir = "/tmp/workspace"
-config_path = "/tmp/config.toml"
 default_temperature = 0.7
 
 [memory]
@@ -11600,8 +11716,6 @@ search_mode = "hybrid"
     #[test]
     async fn search_mode_defaults_to_hybrid_when_omitted() {
         let toml_str = r#"
-workspace_dir = "/tmp/workspace"
-config_path = "/tmp/config.toml"
 default_temperature = 0.7
 
 [memory]
@@ -11848,8 +11962,6 @@ auto_save = true
     #[test]
     async fn config_minimal_toml_uses_defaults() {
         let minimal = r#"
-workspace_dir = "/tmp/ws"
-config_path = "/tmp/config.toml"
 default_temperature = 0.7
 "#;
         let parsed = parse_test_config(minimal);
@@ -13288,8 +13400,6 @@ channel_ids = ["C123", "D456"]
     async fn checklist_gateway_backward_compat_no_gateway_section() {
         // Old configs without [gateway] should get secure defaults
         let minimal = r#"
-workspace_dir = "/tmp/ws"
-config_path = "/tmp/config.toml"
 default_temperature = 0.7
 "#;
         let parsed = parse_test_config(minimal);
@@ -13350,8 +13460,6 @@ default_temperature = 0.7
     #[test]
     async fn composio_config_backward_compat_missing_section() {
         let minimal = r#"
-workspace_dir = "/tmp/ws"
-config_path = "/tmp/config.toml"
 default_temperature = 0.7
 "#;
         let parsed = parse_test_config(minimal);
@@ -13405,8 +13513,6 @@ enable = true
     #[test]
     async fn secrets_config_backward_compat_missing_section() {
         let minimal = r#"
-workspace_dir = "/tmp/ws"
-config_path = "/tmp/config.toml"
 default_temperature = 0.7
 "#;
         let parsed = parse_test_config(minimal);
@@ -13490,8 +13596,6 @@ default_temperature = 0.7
     #[test]
     async fn browser_config_backward_compat_missing_section() {
         let minimal = r#"
-workspace_dir = "/tmp/ws"
-config_path = "/tmp/config.toml"
 default_temperature = 0.7
 "#;
         let parsed = parse_test_config(minimal);
@@ -16240,8 +16344,6 @@ require_otp_to_resume = true
     /// The TOML template baked into Docker images (Dockerfile + Dockerfile.debian).
     /// Kept here so changes to the Dockerfiles can be validated by `cargo test`.
     const DOCKER_CONFIG_TEMPLATE: &str = r#"
-workspace_dir = "/hrafn-data/workspace"
-config_path = "/hrafn-data/.hrafn/config.toml"
 api_key = ""
 default_provider = "openrouter"
 default_model = "anthropic/claude-sonnet-4-20250514"

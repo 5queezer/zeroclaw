@@ -1,5 +1,3 @@
-workspace_dir = "/hrafn-data/workspace"
-config_path = "/hrafn-data/.hrafn/config.toml"
 # API key: set via .env or environment variable at runtime
 api_key = "http://host.docker.internal:11434"
 default_provider = "ollama"
