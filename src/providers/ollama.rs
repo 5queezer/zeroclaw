@@ -2,6 +2,7 @@ use crate::multimodal;
 use crate::providers::traits::{
     ChatMessage, ChatResponse, Provider, ProviderCapabilities, TokenUsage, ToolCall,
 };
+use crate::tools::SchemaCleanr;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -851,7 +852,7 @@ impl Provider for OllamaProvider {
                             "function": {
                                 "name": s.name,
                                 "description": s.description,
-                                "parameters": s.parameters
+                                "parameters": SchemaCleanr::clean_for_openai(s.parameters.clone())
                             }
                         })
                     })
