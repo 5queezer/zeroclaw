@@ -12,7 +12,7 @@ Use this with:
 
 Hrafn uses a single default branch: `master`. All contributor PRs target `master` directly. There is no `dev` or promotion branch.
 
-Current maintainers with PR approval authority: `theonlyhennygod`, `JordanTheJet`, and `SimianAstronaut7`.
+Current maintainers with PR approval authority: `5queezer`.
 
 ## Active Workflows
 

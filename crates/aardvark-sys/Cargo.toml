@@ -2,7 +2,7 @@
 name = "aardvark-sys"
 version = "0.1.0"
 edition = "2024"
-authors = ["theonlyhennygod"]
+authors = ["5queezer"]
 license = "MIT OR Apache-2.0"
 description = "Low-level bindings for the Total Phase Aardvark I2C/SPI/GPIO USB adapter"
 repository = "https://github.com/5queezer/hrafn"

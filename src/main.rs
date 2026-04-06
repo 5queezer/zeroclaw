@@ -154,7 +154,7 @@ enum EstopLevelArg {
 /// `Hrafn` - Zero overhead. Zero compromise. 100% Rust.
 #[derive(Parser, Debug)]
 #[command(name = "hrafn")]
-#[command(author = "theonlyhennygod")]
+#[command(author = "5queezer")]
 #[command(version = env!("HRAFN_VERSION"))]
 #[command(about = "The fastest, smallest AI assistant.", long_about = None)]
 struct Cli {
