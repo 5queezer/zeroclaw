@@ -1,4 +1,4 @@
-//! ACP (Agent Control Protocol) Server — JSON-RPC 2.0 over stdio.
+//! Stdio-RPC Server — JSON-RPC 2.0 session server over stdio.
 //!
 //! Provides an IDE-friendly interface for spawning and managing isolated agent
 //! sessions. Each session wraps an [`Agent`] built from the global config with
@@ -30,17 +30,17 @@ use uuid::Uuid;
 
 // ── Configuration ────────────────────────────────────────────────
 
-/// ACP server configuration (optional `[acp]` section in config.toml).
+/// Stdio-RPC server configuration (optional `[stdio_rpc]` section in config.toml).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct AcpServerConfig {
+pub struct StdioRpcConfig {
     /// Maximum number of concurrent sessions. Default: 10.
     pub max_sessions: usize,
     /// Session inactivity timeout in seconds. Default: 3600 (1 hour).
     pub session_timeout_secs: u64,
 }
 
-impl Default for AcpServerConfig {
+impl Default for StdioRpcConfig {
     fn default() -> Self {
         Self {
             max_sessions: 10,
@@ -105,29 +105,29 @@ struct Session {
     workspace_dir: String,
 }
 
-// ── ACP Server ───────────────────────────────────────────────────
+// ── Stdio-RPC Server ─────────────────────────────────────────────
 
-pub struct AcpServer {
+pub struct StdioRpcServer {
     config: Config,
-    acp_config: AcpServerConfig,
+    rpc_config: StdioRpcConfig,
     sessions: Arc<Mutex<HashMap<String, Session>>>,
 }
 
-impl AcpServer {
-    pub fn new(config: Config, acp_config: AcpServerConfig) -> Self {
+impl StdioRpcServer {
+    pub fn new(config: Config, rpc_config: StdioRpcConfig) -> Self {
         Self {
             config,
-            acp_config,
+            rpc_config,
             sessions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    /// Run the ACP server, reading JSON-RPC requests from stdin and writing
+    /// Run the stdio-RPC server, reading JSON-RPC requests from stdin and writing
     /// responses/notifications to stdout.
     pub async fn run(&self) -> Result<()> {
         info!(
-            "ACP server starting (max_sessions={}, timeout={}s)",
-            self.acp_config.max_sessions, self.acp_config.session_timeout_secs
+            "Stdio-RPC server starting (max_sessions={}, timeout={}s)",
+            self.rpc_config.max_sessions, self.rpc_config.session_timeout_secs
         );
 
         let stdin = tokio::io::stdin();
@@ -136,7 +136,7 @@ impl AcpServer {
 
         // Spawn session reaper
         let sessions = Arc::clone(&self.sessions);
-        let timeout = Duration::from_secs(self.acp_config.session_timeout_secs);
+        let timeout = Duration::from_secs(self.rpc_config.session_timeout_secs);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(60));
             loop {
@@ -161,7 +161,7 @@ impl AcpServer {
             line.clear();
             let bytes_read = reader.read_line(&mut line).await?;
             if bytes_read == 0 {
-                info!("ACP server: stdin closed, shutting down");
+                info!("Stdio-RPC server: stdin closed, shutting down");
                 break;
             }
 
@@ -223,13 +223,13 @@ impl AcpServer {
         Ok(serde_json::json!({
             "protocolVersion": "1.0",
             "serverInfo": {
-                "name": "hrafn-acp",
+                "name": "hrafn-stdio-rpc",
                 "version": env!("HRAFN_VERSION"),
             },
             "capabilities": {
                 "streaming": true,
-                "maxSessions": self.acp_config.max_sessions,
-                "sessionTimeoutSecs": self.acp_config.session_timeout_secs,
+                "maxSessions": self.rpc_config.max_sessions,
+                "sessionTimeoutSecs": self.rpc_config.session_timeout_secs,
             },
             "methods": [
                 "initialize",
@@ -243,12 +243,12 @@ impl AcpServer {
     async fn handle_session_new(&self, params: &Value) -> RpcResult {
         let mut sessions = self.sessions.lock().await;
 
-        if sessions.len() >= self.acp_config.max_sessions {
+        if sessions.len() >= self.rpc_config.max_sessions {
             return Err(RpcError {
                 code: SESSION_LIMIT_REACHED,
                 message: format!(
                     "Maximum session limit reached ({})",
-                    self.acp_config.max_sessions
+                    self.rpc_config.max_sessions
                 ),
                 data: None,
             });
@@ -505,24 +505,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn acp_server_config_defaults() {
-        let cfg = AcpServerConfig::default();
+    fn stdio_rpc_config_defaults() {
+        let cfg = StdioRpcConfig::default();
         assert_eq!(cfg.max_sessions, 10);
         assert_eq!(cfg.session_timeout_secs, 3600);
     }
 
     #[test]
-    fn acp_server_config_deserialize() {
+    fn stdio_rpc_config_deserialize() {
         let json = r#"{"max_sessions": 5, "session_timeout_secs": 1800}"#;
-        let cfg: AcpServerConfig = serde_json::from_str(json).unwrap();
+        let cfg: StdioRpcConfig = serde_json::from_str(json).unwrap();
         assert_eq!(cfg.max_sessions, 5);
         assert_eq!(cfg.session_timeout_secs, 1800);
     }
 
     #[test]
-    fn acp_server_config_deserialize_partial() {
+    fn stdio_rpc_config_deserialize_partial() {
         let json = r#"{"max_sessions": 3}"#;
-        let cfg: AcpServerConfig = serde_json::from_str(json).unwrap();
+        let cfg: StdioRpcConfig = serde_json::from_str(json).unwrap();
         assert_eq!(cfg.max_sessions, 3);
         assert_eq!(cfg.session_timeout_secs, 3600);
     }
