@@ -8838,6 +8838,46 @@ Let me check the result."#;
         assert_eq!(history[1].content, "new msg");
     }
 
+    /// Regression: trim_history must not leave an orphan tool result whose
+    /// paired assistant message was dropped. Such an orphan causes providers
+    /// to reject the request with a 400 ("unexpected tool_use_id").
+    #[test]
+    fn trim_history_drops_orphan_tool_results() {
+        use crate::providers::ChatMessage;
+
+        // system, assistant, tool, user, assistant — max=2 → drop 2 non-system.
+        // Without the fix: drops assistant+tool → head is user (fine).
+        // Edge case: system, assistant, tool, assistant, tool, user — max=3 → drop 2.
+        // Without fix: drops [assistant, tool] → head is [assistant, tool, user] (fine).
+        // Real repro: system, user, assistant, tool, user — max=2 → drop 2.
+        // Drops [user, assistant] → head is [tool, user] — orphan tool!
+        let mut history = vec![
+            ChatMessage::system("sys"),
+            ChatMessage::user("old q"),
+            ChatMessage::assistant("calling tool"),
+            ChatMessage::tool("tool result"),
+            ChatMessage::user("new q"),
+        ];
+        trim_history(&mut history, 2);
+
+        // System must be preserved.
+        assert_eq!(history[0].role, "system");
+        // No message after system should have role "tool" without a preceding assistant.
+        for window in history.windows(2) {
+            if window[1].role == "tool" {
+                assert_eq!(
+                    window[0].role, "assistant",
+                    "orphan tool result left after trim — tool message without preceding assistant"
+                );
+            }
+        }
+        // Head of non-system messages must not be "tool".
+        assert_ne!(
+            history[1].role, "tool",
+            "trim_history left an orphan tool result at the head"
+        );
+    }
+
     /// When `build_system_prompt_with_mode` is called with `native_tools = true`,
     /// the output must contain ZERO XML protocol artifacts. In the native path
     /// `build_tool_instructions` is never called, so the system prompt alone

@@ -144,7 +144,17 @@ pub(crate) fn trim_history(history: &mut Vec<ChatMessage>, max_history: usize) {
     }
 
     let start = if has_system { 1 } else { 0 };
-    let to_remove = non_system_count - max_history;
+    let mut to_remove = non_system_count - max_history;
+
+    // Avoid creating orphan tool results: if the first message remaining
+    // after the drop has role "tool", its paired assistant message was
+    // dropped, so the tool result must be dropped too. Otherwise the
+    // history would contain a tool_result without a matching tool_use,
+    // causing providers to reject the request with a 400.
+    while start + to_remove < history.len() && history[start + to_remove].role == "tool" {
+        to_remove += 1;
+    }
+
     history.drain(start..start + to_remove);
 }
 
