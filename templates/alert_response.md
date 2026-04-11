@@ -21,6 +21,9 @@ You received an automated alert from the trading engine.
    - `set_alert` — set a follow-up alert for further confirmation
    - `skip` — conditions don't warrant action
 6. **Report**: Always explain the reasoning and send the chart to the user.
+7. **Failure fallback**: If tool calls fail (server unreachable, timeout), send a
+   plaintext summary to the user instead: alert condition, current value, and
+   recommended action. Do not block delivery waiting for a chart.
 
 ## Language
 

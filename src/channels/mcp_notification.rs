@@ -106,7 +106,14 @@ pub fn spawn_notification_listener(
         const MAX_BACKOFF_SECS: u64 = 60;
 
         loop {
-            tracing::info!("MCP notification listener connecting to `{server_name}` at {sse_url}");
+            if tx.is_closed() {
+                tracing::info!(
+                    "MCP notification listener for `{server_name}` stopping: channel closed"
+                );
+                break;
+            }
+            tracing::info!("MCP notification listener connecting to `{server_name}`");
+            tracing::debug!("MCP notification listener `{server_name}` endpoint: {sse_url}");
             match run_sse_listener(
                 &server_name,
                 &sse_url,
@@ -126,6 +133,12 @@ pub fn spawn_notification_listener(
                 Err(e) => {
                     tracing::warn!("MCP notification listener for `{server_name}` error: {e:#}");
                 }
+            }
+            if tx.is_closed() {
+                tracing::info!(
+                    "MCP notification listener for `{server_name}` stopping: channel closed"
+                );
+                break;
             }
             tracing::info!(
                 "MCP notification listener for `{server_name}` reconnecting in {backoff_secs}s"
@@ -193,8 +206,19 @@ async fn run_sse_listener(
     for (key, value) in headers {
         post_req = post_req.header(key, value);
     }
-    if let Err(e) = post_req.send().await {
-        tracing::warn!("MCP notification subscribe to `{server_name}` failed (non-fatal): {e}");
+    match post_req.send().await {
+        Ok(resp) if resp.status().is_success() => {}
+        Ok(resp) => {
+            tracing::warn!(
+                "MCP notification subscribe to `{server_name}` returned HTTP {} (non-fatal)",
+                resp.status()
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                "MCP notification subscribe to `{server_name}` failed (non-fatal): {e}"
+            );
+        }
     }
 
     tracing::info!("MCP notification listener for `{server_name}` connected, reading events");
@@ -217,24 +241,32 @@ async fn run_sse_listener(
                 let data = cur_data.join("\n");
                 cur_data.clear();
 
-                if let Ok(msg) = serde_json::from_str::<Value>(&data) {
-                    let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
+                match serde_json::from_str::<Value>(&data) {
+                    Ok(msg) => {
+                        let method =
+                            msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
 
-                    if method == "notifications/alert_triggered" {
-                        if let Some(channel_msg) =
-                            alert_notification_to_channel_message(&msg, reply_target)
-                        {
-                            tracing::info!(
-                                "MCP notification from `{server_name}`: alert {}",
-                                channel_msg.id
-                            );
-                            if tx.send(channel_msg).await.is_err() {
-                                tracing::warn!(
-                                    "MCP notification channel for `{server_name}` closed"
+                        if method == "notifications/alert_triggered" {
+                            if let Some(channel_msg) =
+                                alert_notification_to_channel_message(&msg, reply_target)
+                            {
+                                tracing::info!(
+                                    "MCP notification from `{server_name}`: alert {}",
+                                    channel_msg.id
                                 );
-                                return Ok(());
+                                if tx.send(channel_msg).await.is_err() {
+                                    tracing::warn!(
+                                        "MCP notification channel for `{server_name}` closed"
+                                    );
+                                    return Ok(());
+                                }
                             }
                         }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "MCP notification from `{server_name}` had invalid JSON: {e}"
+                        );
                     }
                 }
             }
