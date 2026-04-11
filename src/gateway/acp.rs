@@ -656,7 +656,7 @@ pub async fn handle_run_create(
     state.acp_run_store.insert(run.clone()).await;
 
     match mode {
-        RunMode::Sync => handle_run_sync(state, run, agent_def, user_message).await,
+        RunMode::Sync => Box::pin(handle_run_sync(state, run, agent_def, user_message)).await,
         RunMode::Async => handle_run_async(state, run, agent_def, user_message).await,
         RunMode::Stream => handle_run_stream(state, run, agent_def, user_message).await,
     }
@@ -673,14 +673,26 @@ async fn handle_run_sync(
 
     state
         .acp_run_store
+        .push_event(&run_id, Event::RunCreated { run: run.clone() })
+        .await;
+
+    state
+        .acp_run_store
         .update_status(&run_id, RunStatus::InProgress)
         .await;
+
+    if let Some(r) = state.acp_run_store.get(&run_id).await {
+        state
+            .acp_run_store
+            .push_event(&run_id, Event::RunInProgress { run: r })
+            .await;
+    }
 
     let result = execute_agent(&state, &agent_def, &user_message).await;
 
     match result {
         Ok(response_text) => {
-            let output = vec![Message {
+            let output_msg = Message {
                 role: "agent".into(),
                 parts: vec![MessagePart {
                     name: None,
@@ -692,12 +704,42 @@ async fn handle_run_sync(
                 }],
                 created_at: Some(Utc::now()),
                 completed_at: Some(Utc::now()),
-            }];
-            state.acp_run_store.set_output(&run_id, output).await;
+            };
+
+            state
+                .acp_run_store
+                .push_event(
+                    &run_id,
+                    Event::MessageCreated {
+                        message: output_msg.clone(),
+                    },
+                )
+                .await;
+            state
+                .acp_run_store
+                .push_event(
+                    &run_id,
+                    Event::MessageCompleted {
+                        message: output_msg.clone(),
+                    },
+                )
+                .await;
+
+            state
+                .acp_run_store
+                .set_output(&run_id, vec![output_msg])
+                .await;
             state
                 .acp_run_store
                 .update_status(&run_id, RunStatus::Completed)
                 .await;
+
+            if let Some(r) = state.acp_run_store.get(&run_id).await {
+                state
+                    .acp_run_store
+                    .push_event(&run_id, Event::RunCompleted { run: r })
+                    .await;
+            }
         }
         Err(e) => {
             let error = AcpError {
@@ -710,6 +752,13 @@ async fn handle_run_sync(
                 .acp_run_store
                 .update_status(&run_id, RunStatus::Failed)
                 .await;
+
+            if let Some(r) = state.acp_run_store.get(&run_id).await {
+                state
+                    .acp_run_store
+                    .push_event(&run_id, Event::RunFailed { run: r })
+                    .await;
+            }
         }
     }
 
@@ -735,6 +784,11 @@ async fn handle_run_async(
 ) -> Result<axum::response::Response, AcpError> {
     let run_id = run.run_id.clone();
 
+    state
+        .acp_run_store
+        .push_event(&run_id, Event::RunCreated { run: run.clone() })
+        .await;
+
     // Spawn background execution
     let bg_state = state.clone();
     let bg_run_id = run_id.clone();
@@ -744,11 +798,18 @@ async fn handle_run_async(
             .update_status(&bg_run_id, RunStatus::InProgress)
             .await;
 
+        if let Some(r) = bg_state.acp_run_store.get(&bg_run_id).await {
+            bg_state
+                .acp_run_store
+                .push_event(&bg_run_id, Event::RunInProgress { run: r })
+                .await;
+        }
+
         let result = execute_agent(&bg_state, &agent_def, &user_message).await;
 
         match result {
             Ok(response_text) => {
-                let output = vec![Message {
+                let output_msg = Message {
                     role: "agent".into(),
                     parts: vec![MessagePart {
                         name: None,
@@ -760,12 +821,42 @@ async fn handle_run_async(
                     }],
                     created_at: Some(Utc::now()),
                     completed_at: Some(Utc::now()),
-                }];
-                bg_state.acp_run_store.set_output(&bg_run_id, output).await;
+                };
+
+                bg_state
+                    .acp_run_store
+                    .push_event(
+                        &bg_run_id,
+                        Event::MessageCreated {
+                            message: output_msg.clone(),
+                        },
+                    )
+                    .await;
+                bg_state
+                    .acp_run_store
+                    .push_event(
+                        &bg_run_id,
+                        Event::MessageCompleted {
+                            message: output_msg.clone(),
+                        },
+                    )
+                    .await;
+
+                bg_state
+                    .acp_run_store
+                    .set_output(&bg_run_id, vec![output_msg])
+                    .await;
                 bg_state
                     .acp_run_store
                     .update_status(&bg_run_id, RunStatus::Completed)
                     .await;
+
+                if let Some(r) = bg_state.acp_run_store.get(&bg_run_id).await {
+                    bg_state
+                        .acp_run_store
+                        .push_event(&bg_run_id, Event::RunCompleted { run: r })
+                        .await;
+                }
             }
             Err(e) => {
                 let error = AcpError {
@@ -778,6 +869,13 @@ async fn handle_run_async(
                     .acp_run_store
                     .update_status(&bg_run_id, RunStatus::Failed)
                     .await;
+
+                if let Some(r) = bg_state.acp_run_store.get(&bg_run_id).await {
+                    bg_state
+                        .acp_run_store
+                        .push_event(&bg_run_id, Event::RunFailed { run: r })
+                        .await;
+                }
             }
         }
     });

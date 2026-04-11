@@ -419,6 +419,17 @@ impl Agent {
             None,
         );
 
+        // ── Register spawn_agent tool ──────────────────────────────
+        let parent_tool_names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
+        tools.push(Box::new(crate::tools::spawn_agent::SpawnAgentTool::new(
+            Arc::clone(&security),
+            config.clone(),
+            parent_tool_names,
+            config.acp.max_spawn_depth,
+            config.acp.max_spawn_concurrent,
+            0, // depth 0 = top-level
+        )));
+
         // ── Wire MCP tools (non-fatal) ─────────────────────────────
         // Replicates the same MCP initialization logic used in the CLI
         // and webhook paths (loop_.rs) so that the WebSocket/daemon UI
