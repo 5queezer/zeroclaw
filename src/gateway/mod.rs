@@ -897,6 +897,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
     // ── ACP (Agent Communication Protocol) ──────────────────────
     let acp_agent_registry = acp::build_agent_registry(&config);
     let acp_run_store = Arc::new(acp::RunStore::new());
+    acp::spawn_run_eviction(Arc::clone(&acp_run_store), config.acp.run_ttl_secs, 300);
 
     let state = AppState {
         config: config_state,

@@ -536,6 +536,25 @@ pub async fn handle_agent_get(
 
 // ── Tests ───────────────────────────────────────────────────────
 
+// ── Run Eviction ───────────────────────────────────────────────
+
+/// Spawn a background task that periodically evicts expired terminal runs.
+pub fn spawn_run_eviction(run_store: Arc<RunStore>, ttl_secs: u64, interval_secs: u64) {
+    tokio::spawn(async move {
+        let ttl = std::time::Duration::from_secs(ttl_secs);
+        let interval = std::time::Duration::from_secs(interval_secs);
+        loop {
+            tokio::time::sleep(interval).await;
+            let evicted = run_store.evict_expired(ttl).await;
+            if evicted > 0 {
+                tracing::debug!(evicted, "ACP run eviction sweep");
+            }
+        }
+    });
+}
+
+// ── Tests ───────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
