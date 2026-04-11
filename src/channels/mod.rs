@@ -683,14 +683,19 @@ fn build_channel_system_prompt(
     }
 
     if !reply_target.is_empty() {
+        // Sanitise metadata to prevent control characters from breaking prompt
+        // structure (newlines, carriage returns).
+        let safe_channel = channel_name.replace(['\r', '\n'], " ");
+        let safe_reply = reply_target.replace(['\r', '\n'], " ");
+        let safe_sender = sender.replace(['\r', '\n'], " ");
         let context = format!(
-            "\n\nChannel context: You are currently responding on channel={channel_name}, \
-             reply_target={reply_target}, sender={sender}. \
+            "\n\nChannel context: You are currently responding on channel={safe_channel}, \
+             reply_target={safe_reply}, sender={safe_sender}. \
              The sender field is the platform-specific user ID of the person who sent \
              this message. Use it to distinguish between different users. \
              When scheduling delayed messages or reminders \
              via cron_add for this conversation, use delivery={{\"mode\":\"announce\",\
-             \"channel\":\"{channel_name}\",\"to\":\"{reply_target}\"}} so the message \
+             \"channel\":\"{safe_channel}\",\"to\":\"{safe_reply}\"}} so the message \
              reaches the user."
         );
         prompt.push_str(&context);
