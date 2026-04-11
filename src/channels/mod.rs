@@ -53,6 +53,8 @@ pub mod stall_watchdog;
 pub mod stdio_rpc;
 #[cfg(feature = "channel-telegram")]
 pub mod telegram;
+#[cfg(feature = "channel-telegram-user")]
+pub mod telegram_user;
 pub mod traits;
 pub mod transcription;
 pub mod tts;
@@ -101,6 +103,8 @@ pub use signal::SignalChannel;
 pub use slack::SlackChannel;
 #[cfg(feature = "channel-telegram")]
 pub use telegram::TelegramChannel;
+#[cfg(feature = "channel-telegram-user")]
+pub use telegram_user::TelegramUserChannel;
 pub use traits::{Channel, SendMessage};
 #[allow(unused_imports)]
 pub use tts::{TtsManager, TtsProvider};
@@ -4514,6 +4518,17 @@ fn collect_configured_channels(
              the `channel-telegram` feature; skipping."
         );
     }
+
+    #[cfg(feature = "channel-telegram-user")]
+    if let Some(ref tgu) = config.channels_config.telegram_user {
+        channels.push(ConfiguredChannel {
+            display_name: "Telegram User",
+            channel: Arc::new(TelegramUserChannel::new(tgu)),
+        });
+    }
+    // Note: telegram_user config field is behind cfg(feature = "channel-telegram-user"),
+    // so TOML with [channels_config.telegram_user] will fail to deserialize when the
+    // feature is disabled — no runtime warning needed.
 
     #[cfg(feature = "channel-discord")]
     if let Some(ref dc) = config.channels_config.discord {

@@ -56,6 +56,11 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # Matrix client + E2EE decryption
 matrix-sdk = { version = "0.16", optional = true, default-features = false, features = ["e2e-encryption", "rustls-tls", "markdown", "sqlite"] }
 
+# Telegram user client (grammers)
+grammers-client = { version = "0.9", optional = true }
+grammers-session = { version = "0.9", optional = true }
+grammers-tl-types = { version = "0.9", optional = true }
+
 # Serialization
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde_json = { version = "1.0", default-features = false, features = ["std"] }
@@ -298,6 +303,7 @@ channel-matrix = ["dep:matrix-sdk"]
 channel-lark = ["dep:prost"]
 channel-feishu = ["channel-lark"]  # Alias for Feishu users (Lark and Feishu are the same platform)
 channel-telegram = []
+channel-telegram-user = ["dep:grammers-client", "dep:grammers-session", "dep:grammers-tl-types"]
 channel-discord = []
 channel-whatsapp = []
 channel-signal = []
@@ -341,6 +347,7 @@ webauthn = []
 # not available on standard CI runners (e.g., voice-wake needs libasound2-dev).
 ci-all = [
     "desktop",
+    "channel-telegram-user",
     "channel-nostr",
     "channel-telegram",
     "channel-discord",
