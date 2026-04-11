@@ -2956,4 +2956,23 @@ mod tests {
 
         assert!((final_temperature - 0.7).abs() < f64::EPSILON);
     }
+
+    #[test]
+    fn stdio_rpc_command_parses() {
+        let cli =
+            Cli::try_parse_from(["hrafn", "stdio-rpc"]).expect("stdio-rpc command should parse");
+        match cli.command {
+            Commands::StdioRpc { .. } => {}
+            other => panic!("expected StdioRpc command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn acp_alias_parses_to_stdio_rpc() {
+        let cli = Cli::try_parse_from(["hrafn", "acp"]).expect("acp alias should parse");
+        match cli.command {
+            Commands::StdioRpc { .. } => {}
+            other => panic!("expected StdioRpc command via acp alias, got {other:?}"),
+        }
+    }
 }

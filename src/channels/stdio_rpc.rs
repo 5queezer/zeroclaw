@@ -223,7 +223,7 @@ impl StdioRpcServer {
         Ok(serde_json::json!({
             "protocolVersion": "1.0",
             "serverInfo": {
-                "name": "hrafn-stdio-rpc",
+                "name": "hrafn-acp",
                 "version": env!("HRAFN_VERSION"),
             },
             "capabilities": {
