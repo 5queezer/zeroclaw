@@ -389,6 +389,8 @@ pub struct AppState {
     /// In-memory A2A task store (populated when `a2a.enabled`)
     #[cfg(feature = "tool-a2a")]
     pub a2a_task_store: Option<Arc<a2a::TaskStore>>,
+    /// ACP agent registry
+    pub acp_agent_registry: crate::gateway::acp::AgentRegistry,
     /// ACP run store
     pub acp_run_store: Arc<crate::gateway::acp::RunStore>,
 }
@@ -893,6 +895,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
     };
 
     // ── ACP (Agent Communication Protocol) ──────────────────────
+    let acp_agent_registry = acp::build_agent_registry(&config);
     let acp_run_store = Arc::new(acp::RunStore::new());
 
     let state = AppState {
@@ -959,6 +962,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         a2a_agent_card,
         #[cfg(feature = "tool-a2a")]
         a2a_task_store,
+        acp_agent_registry,
         acp_run_store,
     };
 
@@ -1084,6 +1088,12 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
     } else {
         inner
     };
+
+    // ── ACP (Agent Communication Protocol) discovery routes ──
+    let inner = inner
+        .route("/ping", get(acp::handle_ping))
+        .route("/agents", get(acp::handle_agents_list))
+        .route("/agents/{name}", get(acp::handle_agent_get));
 
     // ── WebAuthn hardware key authentication API (requires webauthn feature) ──
     #[cfg(feature = "webauthn")]
@@ -2490,6 +2500,7 @@ mod tests {
             a2a_agent_card: None,
             #[cfg(feature = "tool-a2a")]
             a2a_task_store: None,
+            acp_agent_registry: Arc::new(vec![]),
             acp_run_store: Arc::new(crate::gateway::acp::RunStore::new()),
         };
 
@@ -2566,6 +2577,7 @@ mod tests {
             a2a_agent_card: None,
             #[cfg(feature = "tool-a2a")]
             a2a_task_store: None,
+            acp_agent_registry: Arc::new(vec![]),
             acp_run_store: Arc::new(crate::gateway::acp::RunStore::new()),
         };
 
@@ -2969,6 +2981,7 @@ mod tests {
             a2a_agent_card: None,
             #[cfg(feature = "tool-a2a")]
             a2a_task_store: None,
+            acp_agent_registry: Arc::new(vec![]),
             acp_run_store: Arc::new(crate::gateway::acp::RunStore::new()),
         };
 
@@ -3060,6 +3073,7 @@ mod tests {
             a2a_agent_card: None,
             #[cfg(feature = "tool-a2a")]
             a2a_task_store: None,
+            acp_agent_registry: Arc::new(vec![]),
             acp_run_store: Arc::new(crate::gateway::acp::RunStore::new()),
         };
 
@@ -3157,6 +3171,7 @@ mod tests {
             a2a_agent_card: None,
             #[cfg(feature = "tool-a2a")]
             a2a_task_store: None,
+            acp_agent_registry: Arc::new(vec![]),
             acp_run_store: Arc::new(crate::gateway::acp::RunStore::new()),
         };
 
@@ -3227,6 +3242,7 @@ mod tests {
             a2a_agent_card: None,
             #[cfg(feature = "tool-a2a")]
             a2a_task_store: None,
+            acp_agent_registry: Arc::new(vec![]),
             acp_run_store: Arc::new(crate::gateway::acp::RunStore::new()),
         };
 
@@ -3302,6 +3318,7 @@ mod tests {
             a2a_agent_card: None,
             #[cfg(feature = "tool-a2a")]
             a2a_task_store: None,
+            acp_agent_registry: Arc::new(vec![]),
             acp_run_store: Arc::new(crate::gateway::acp::RunStore::new()),
         };
 
@@ -3385,6 +3402,7 @@ mod tests {
             a2a_agent_card: None,
             #[cfg(feature = "tool-a2a")]
             a2a_task_store: None,
+            acp_agent_registry: Arc::new(vec![]),
             acp_run_store: Arc::new(crate::gateway::acp::RunStore::new()),
         };
 
@@ -3462,6 +3480,7 @@ mod tests {
             a2a_agent_card: None,
             #[cfg(feature = "tool-a2a")]
             a2a_task_store: None,
+            acp_agent_registry: Arc::new(vec![]),
             acp_run_store: Arc::new(crate::gateway::acp::RunStore::new()),
         };
 

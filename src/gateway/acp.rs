@@ -1,13 +1,21 @@
 //! # ACP (Agent Communication Protocol) — v0.2.0 Implementation
 //! Endpoints: /ping, /agents, /runs, /session
 
-use crate::config::AcpCapability;
-use axum::{Json, http::StatusCode, response::IntoResponse};
+use crate::config::{AcpAgentDef, AcpCapability, Config};
+use axum::{
+    Json,
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::IntoResponse,
+};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::RwLock;
+
+use super::AppState;
 
 // ── Error Model ─────────────────────────────────────────────────
 
@@ -439,6 +447,93 @@ impl RunStore {
     }
 }
 
+// ── Agent Registry ─────────────────────────────────────────────
+
+/// Shared registry of ACP agent definitions.
+pub type AgentRegistry = Arc<Vec<AcpAgentDef>>;
+
+/// Convert a config `AcpAgentDef` into an API `AgentManifest`.
+pub fn manifest_from_def(def: &AcpAgentDef) -> AgentManifest {
+    AgentManifest {
+        name: def.name.clone(),
+        description: Some(def.description.clone()),
+        input_content_types: def.input_content_types.clone(),
+        output_content_types: def.output_content_types.clone(),
+        metadata: Some(AgentMetadata {
+            capabilities: def.capabilities.clone(),
+            framework: "hrafn".to_string(),
+            tags: vec![],
+        }),
+        status: Some("ready".to_string()),
+    }
+}
+
+/// Build the agent registry from config. If no agents are configured, auto-register
+/// a default agent using the identity name (or "hrafn").
+pub fn build_agent_registry(config: &Config) -> AgentRegistry {
+    if !config.acp.agents.is_empty() {
+        return Arc::new(config.acp.agents.clone());
+    }
+
+    let raw_name = config
+        .identity
+        .aieos_path
+        .as_deref()
+        .unwrap_or("hrafn")
+        .to_lowercase()
+        .replace(' ', "-");
+
+    Arc::new(vec![AcpAgentDef {
+        name: raw_name,
+        description: "Default Hrafn agent".to_string(),
+        system_prompt: None,
+        model: None,
+        tools: vec![],
+        input_content_types: vec!["text/plain".to_string()],
+        output_content_types: vec!["text/plain".to_string()],
+        capabilities: vec![],
+    }])
+}
+
+// ── Discovery Handlers ─────────────────────────────────────────
+
+/// `GET /ping` — liveness probe.
+pub async fn handle_ping() -> impl IntoResponse {
+    Json(serde_json::json!({}))
+}
+
+/// `GET /agents` — paginated agent listing.
+pub async fn handle_agents_list(
+    State(state): State<AppState>,
+    Query(query): Query<AgentsListQuery>,
+) -> impl IntoResponse {
+    let registry = &state.acp_agent_registry;
+    let manifests: Vec<AgentManifest> = registry
+        .iter()
+        .skip(query.offset)
+        .take(query.limit)
+        .map(manifest_from_def)
+        .collect();
+    Json(AgentsListResponse { agents: manifests })
+}
+
+/// `GET /agents/{name}` — single agent lookup.
+pub async fn handle_agent_get(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<AgentManifest>, AcpError> {
+    let registry = &state.acp_agent_registry;
+    registry
+        .iter()
+        .find(|def| def.name == name)
+        .map(|def| Json(manifest_from_def(def)))
+        .ok_or_else(|| AcpError {
+            code: AcpErrorCode::NotFound,
+            message: format!("agent '{name}' not found"),
+            data: None,
+        })
+}
+
 // ── Tests ───────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -582,5 +677,29 @@ mod tests {
 
         let events = store.get_events(&run_id).await;
         assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn build_agent_registry_default() {
+        let config = Config::default();
+        let registry = build_agent_registry(&config);
+        assert_eq!(registry.len(), 1);
+        assert_eq!(registry[0].name, "hrafn");
+    }
+
+    #[test]
+    fn manifest_from_def_includes_framework() {
+        let def = AcpAgentDef {
+            name: "test-agent".into(),
+            description: "A test".into(),
+            system_prompt: None,
+            model: None,
+            tools: vec![],
+            input_content_types: vec!["text/plain".into()],
+            output_content_types: vec!["text/plain".into()],
+            capabilities: vec![],
+        };
+        let manifest = manifest_from_def(&def);
+        assert_eq!(manifest.metadata.as_ref().unwrap().framework, "hrafn");
     }
 }
