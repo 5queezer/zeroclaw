@@ -481,9 +481,19 @@ pub fn build_agent_registry(config: &Config) -> AgentRegistry {
         .identity
         .aieos_path
         .as_deref()
+        .and_then(|p| std::path::Path::new(p).file_stem())
+        .and_then(|s| s.to_str())
         .unwrap_or("hrafn")
-        .to_lowercase()
-        .replace(' ', "-");
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .to_lowercase();
 
     Arc::new(vec![AcpAgentDef {
         name: raw_name,
