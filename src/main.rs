@@ -255,32 +255,27 @@ Examples:
         gateway_command: Option<hrafn::GatewayCommands>,
     },
 
-    /// Start JSON-RPC session server over stdio
+    /// [DEPRECATED] Use 'hrafn gateway' + ACP HTTP API instead
     #[command(
         name = "stdio-rpc",
         alias = "acp",
         long_about = "\
-Start the JSON-RPC session server over stdio.
+DEPRECATED: This command has been replaced by the ACP HTTP API.
 
-Launches a JSON-RPC 2.0 server on stdin/stdout for IDE and tool \
-integration. Supports session management and streaming agent \
-responses as notifications.
+Start the gateway with 'hrafn gateway' and use the ACP endpoints:
+  GET  /agents         — discover agents
+  POST /runs           — create and execute runs
+  GET  /runs/{id}      — check run status
 
-Methods: initialize, session/new, session/prompt, session/stop.
-
-Examples:
-  hrafn stdio-rpc                        # start JSON-RPC session server
-  hrafn stdio-rpc --max-sessions 5       # limit concurrent sessions
-
-Note: 'acp' is a deprecated alias for this command."
+Run 'hrafn stdio-rpc' for the full migration guide."
     )]
     StdioRpc {
-        /// Maximum concurrent sessions (default: 10)
-        #[arg(long)]
+        /// Ignored (deprecated)
+        #[arg(long, hide = true)]
         max_sessions: Option<usize>,
 
-        /// Session inactivity timeout in seconds (default: 3600)
-        #[arg(long)]
+        /// Ignored (deprecated)
+        #[arg(long, hide = true)]
         session_timeout: Option<u64>,
     },
 
@@ -1066,18 +1061,11 @@ async fn main() -> Result<()> {
         }
 
         Commands::StdioRpc {
-            max_sessions,
-            session_timeout,
+            max_sessions: _,
+            session_timeout: _,
         } => {
-            let mut rpc_config = channels::stdio_rpc::StdioRpcConfig::default();
-            if let Some(max) = max_sessions {
-                rpc_config.max_sessions = max;
-            }
-            if let Some(timeout) = session_timeout {
-                rpc_config.session_timeout_secs = timeout;
-            }
-            let server = channels::stdio_rpc::StdioRpcServer::new(config, rpc_config);
-            server.run().await
+            channels::stdio_rpc::print_deprecation_notice();
+            Ok(())
         }
 
         #[cfg(feature = "gateway")]
