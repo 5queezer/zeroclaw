@@ -5239,7 +5239,15 @@ pub async fn start_channels(config: Config) -> Result<()> {
                         .mcp
                         .servers
                         .iter()
-                        .flat_map(|s| s.eager_tools.iter().map(|p| format!("{}__{}", s.name, p)))
+                        .flat_map(|s| {
+                            s.eager_tools.iter().map(|p| {
+                                if p.starts_with('*') {
+                                    p.clone()
+                                } else {
+                                    format!("{}__{}", s.name, p)
+                                }
+                            })
+                        })
                         .collect();
 
                     let deferred_set = crate::tools::DeferredMcpToolSet::from_registry(

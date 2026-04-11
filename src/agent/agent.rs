@@ -450,7 +450,13 @@ impl Agent {
                             .servers
                             .iter()
                             .flat_map(|s| {
-                                s.eager_tools.iter().map(|p| format!("{}__{}", s.name, p))
+                                s.eager_tools.iter().map(|p| {
+                                    if p.starts_with('*') {
+                                        p.clone()
+                                    } else {
+                                        format!("{}__{}", s.name, p)
+                                    }
+                                })
                             })
                             .collect();
 

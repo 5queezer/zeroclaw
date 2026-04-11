@@ -273,11 +273,19 @@ impl DeferredMcpToolSet {
 // ── Eager tool matching ──────────────────────────────────────────────────
 
 /// Check if a tool's prefixed name matches any of the eager patterns.
-/// Supports simple glob: `*` at start/end, or exact match.
+/// Supports simple glob: `*` at start/end/both, or exact match.
+/// - `"*"` matches everything
+/// - `"*suffix"` matches names ending with `suffix`
+/// - `"prefix*"` matches names starting with `prefix`
+/// - `"*infix*"` matches names containing `infix`
 pub fn is_eager_match(name: &str, patterns: &[String]) -> bool {
     patterns.iter().any(|pat| {
         if pat == "*" {
             true
+        } else if pat.starts_with('*') && pat.ends_with('*') && pat.len() > 2 {
+            // *infix* — contains match
+            let infix = &pat[1..pat.len() - 1];
+            name.contains(infix)
         } else if let Some(suffix) = pat.strip_prefix('*') {
             name.ends_with(suffix)
         } else if let Some(prefix) = pat.strip_suffix('*') {
@@ -678,6 +686,14 @@ mod tests {
         assert!(is_eager_match("muninn__recall", &patterns));
         assert!(is_eager_match("other__recall", &patterns));
         assert!(!is_eager_match("muninn__remember", &patterns));
+    }
+
+    #[test]
+    fn eager_match_infix_glob() {
+        let patterns = vec!["*recall*".to_string()];
+        assert!(is_eager_match("muninn__muninn_recall", &patterns));
+        assert!(is_eager_match("muninn__muninn_recall_tree", &patterns));
+        assert!(!is_eager_match("muninn__muninn_remember", &patterns));
     }
 
     #[test]
