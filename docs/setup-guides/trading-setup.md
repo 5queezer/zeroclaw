@@ -1,14 +1,13 @@
 # Trading Signal Pipeline Setup
 
-Hrafn can analyze trading signals from services like 100eyes by combining
-Telegram channel monitoring with the Chartgen MCP server for chart generation
-and technical analysis.
+Hrafn can analyze trading signals from external sources by combining
+Telegram channel monitoring with an MCP-compatible chart server for technical
+analysis.
 
 ## Prerequisites
 
-- A running [Chartgen](https://github.com/5queezer/chartgen) instance in trade
-  mode: `chartgen --trade --testnet`
-- A subscription to a signal provider (e.g. 100eyes Telegram channel)
+- An MCP-compatible chart/trading server running in trade mode
+- A subscription to a signal provider Telegram channel
 - Telegram Bot API credentials (create a bot via
   [@BotFather](https://t.me/BotFather))
 - Telegram API credentials (`api_id`, `api_hash`) from
@@ -17,9 +16,9 @@ and technical analysis.
 
 ## Hrafn Configuration
 
-### Chartgen MCP Server
+### Chart MCP Server
 
-Add the Chartgen MCP server to your `hrafn.toml` so the agent can call chart
+Add your chart MCP server to `hrafn.toml` so the agent can call chart
 generation and indicator tools:
 
 ```toml
@@ -27,18 +26,18 @@ generation and indicator tools:
 enabled = true
 
 [[mcp.servers]]
-name = "chartgen"
+name = "charts"
 transport = "http"
-url = "https://chartgen.vasudev.xyz"
+url = "https://your-chart-server.example.com"
 ```
 
 For local development, use stdio transport instead:
 
 ```toml
 [[mcp.servers]]
-name = "chartgen"
+name = "charts"
 transport = "stdio"
-command = "./chartgen"
+command = "./your-chart-server"
 args = ["--mcp"]
 ```
 
@@ -54,7 +53,7 @@ allowed_users = ["your_telegram_username"]
 
 ### Telegram User Channel (optional)
 
-If you want passive monitoring of third-party channels (e.g. 100eyes), add:
+If you want passive monitoring of third-party channels, add:
 
 ```toml
 [channels_config.telegram_user]
@@ -65,7 +64,7 @@ session_file = "~/.hrafn/telegram_user.session"
 reply_via_bot = "@your_hrafn_bot"
 
 [[channels_config.telegram_user.watch]]
-channel = "100eyes"
+channel = "signal_provider"
 handler = "trading_signal"
 ```
 
@@ -78,19 +77,18 @@ Hrafn loads personality/instruction files from the workspace directory. Create a
 ```markdown
 # SOUL.md
 
-You are a trading analyst assistant. When you receive a signal from 100eyes:
+You are a trading analyst assistant. When you receive a signal:
 
 ## Analysis Rules
-- Use `chartgen__get_indicators` to fetch your own technical analysis
-- No entry without Cipher B green dot confirmation
-- ADX < 20 means no trend — do not trade
+- Use `charts__get_indicators` to fetch your own technical analysis
+- Cross-check signals against your own indicator readings before acting
 - Always generate your own chart and send it to the user
 - Decide: place_order, set_alert, or skip — always with justification
 
 ## Response Format
 1. Summarise the incoming signal (pair, direction, timeframe)
-2. Run indicator checks (RSI, ADX, Cipher B)
-3. Generate a chart via `chartgen__generate_chart`
+2. Run your own indicator checks
+3. Generate a chart via `charts__generate_chart`
 4. State your decision with reasoning
 ```
 
@@ -103,33 +101,31 @@ provider = "anthropic"
 model = "claude-sonnet-4-20250514"
 agentic = true
 allowed_tools = [
-    "chartgen__generate_chart",
-    "chartgen__list_indicators",
-    "chartgen__get_indicators",
+    "charts__generate_chart",
+    "charts__list_indicators",
+    "charts__get_indicators",
 ]
 system_prompt = """
-Du bist ein Trading-Analyst. Du erhältst Signale von 100eyes.
-Nutze chartgen__get_indicators um eigene Analyse zu machen.
-Regeln:
-- Kein Entry ohne Cipher B grüner Dot
-- ADX < 20 = kein Trend, nicht handeln
-- Immer eigenen Chart generieren und an User senden
-- Entscheidung: place_order, set_alert, oder skip mit Begründung
+You are a trading analyst. You receive signals from a signal provider.
+Use charts__get_indicators to run your own analysis.
+Rules:
+- Cross-check every signal with your own indicator readings
+- Always generate your own chart and send it to the user
+- Decision: place_order, set_alert, or skip with justification
 """
 ```
 
 ## Testing
 
-1. Start Chartgen: `chartgen --trade --testnet`
+1. Start your chart server in trade mode
 2. Start Hrafn: `hrafn`
 3. Send a test trading signal image to your Hrafn Telegram bot
-4. Verify the agent calls Chartgen MCP tools (`chartgen__generate_chart`,
-   `chartgen__list_indicators`, `chartgen__get_indicators`) and responds with
-   analysis
+4. Verify the agent calls MCP tools (`charts__generate_chart`,
+   `charts__get_indicators`) and responds with analysis
 
 ## Troubleshooting
 
-- **MCP tools not appearing**: Ensure `[mcp] enabled = true` and the Chartgen
+- **MCP tools not appearing**: Ensure `[mcp] enabled = true` and the chart
   server is reachable at the configured URL.
 - **Agent not using tools**: Check that `deferred_loading` is working — the
   agent must call `tool_search` first if deferred loading is enabled (the
@@ -137,8 +133,8 @@ Regeln:
 - **Timeout errors**: Increase `tool_timeout_secs` on the MCP server config:
   ```toml
   [[mcp.servers]]
-  name = "chartgen"
+  name = "charts"
   transport = "http"
-  url = "https://chartgen.vasudev.xyz"
+  url = "https://your-chart-server.example.com"
   tool_timeout_secs = 60
   ```
