@@ -71,6 +71,35 @@ fn pause_after_no_command_help() {
     let _ = std::io::stdin().read_line(&mut line);
 }
 
+/// Launch the interactive TUI when `hrafn` is invoked without arguments.
+#[cfg(feature = "tui")]
+async fn run_interactive_tui() -> Result<()> {
+    use hrafn::tui::{CANCEL_SENTINEL, spawn_tui};
+    use tokio::sync::mpsc;
+
+    let (user_tx, mut user_rx) = mpsc::channel::<String>(32);
+    let (agent_tx, agent_rx) = mpsc::channel::<String>(32);
+
+    let tui_handle = spawn_tui(user_tx, agent_rx);
+
+    // Temporary echo-back loop until the real agent is wired (PR 3).
+    loop {
+        match user_rx.recv().await {
+            Some(msg) if msg == CANCEL_SENTINEL => {}
+            Some(msg) => {
+                let reply = format!("[echo] {msg}");
+                if agent_tx.send(reply).await.is_err() {
+                    break;
+                }
+            }
+            None => break,
+        }
+    }
+
+    let _ = tui_handle.await;
+    Ok(())
+}
+
 mod agent;
 mod approval;
 mod auth;
@@ -855,6 +884,9 @@ async fn main() -> Result<()> {
     }
 
     if std::env::args_os().len() <= 1 {
+        #[cfg(feature = "tui")]
+        return run_interactive_tui().await;
+        #[cfg(not(feature = "tui"))]
         return print_no_command_help();
     }
 

@@ -258,6 +258,7 @@ libc = "0.2"
 [features]
 default = [
     "desktop",
+    "tui",
     "observability-prometheus",
     "skill-creation",
     "channel-telegram",
