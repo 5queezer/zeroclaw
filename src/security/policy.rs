@@ -1603,20 +1603,10 @@ impl SecurityPolicy {
             };
         }
 
-        // When autonomy is Full, disable workspace_only so the agent can
-        // access paths outside the workspace.  Forbidden-path checks still
-        // apply, preventing access to sensitive system directories.
-        // Ported from zeroclaw-labs/zeroclaw#5486.
-        let effective_workspace_only = if autonomy_config.level == AutonomyLevel::Full {
-            false
-        } else {
-            autonomy_config.workspace_only
-        };
-
         Self {
             autonomy: autonomy_config.level,
             workspace_dir: workspace_dir.to_path_buf(),
-            workspace_only: effective_workspace_only,
+            workspace_only: autonomy_config.workspace_only,
             allowed_commands: autonomy_config.allowed_commands.clone(),
             forbidden_paths: autonomy_config.forbidden_paths.clone(),
             allowed_roots: autonomy_config
@@ -2253,12 +2243,12 @@ mod tests {
     }
 
     #[test]
-    fn from_config_full_autonomy_overrides_workspace_only() {
-        // Full autonomy should disable workspace_only even if the
-        // config default keeps it true.
+    fn from_config_full_autonomy_preserves_workspace_only() {
+        // Full autonomy should honor explicit workspace_only settings.
         // Ported from zeroclaw-labs/zeroclaw#5486.
         let autonomy_config = crate::config::AutonomyConfig {
             level: AutonomyLevel::Full,
+            workspace_only: true,
             ..crate::config::AutonomyConfig::default()
         };
         let workspace = PathBuf::from("/tmp/test-workspace");
@@ -2266,8 +2256,8 @@ mod tests {
 
         assert_eq!(policy.autonomy, AutonomyLevel::Full);
         assert!(
-            !policy.workspace_only,
-            "Full autonomy must override workspace_only to false"
+            policy.workspace_only,
+            "Full autonomy must preserve workspace_only=true"
         );
     }
 
