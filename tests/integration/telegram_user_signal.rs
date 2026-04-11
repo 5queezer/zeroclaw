@@ -90,16 +90,25 @@ fn signal_with_image_attachment() {
 
 #[test]
 fn signal_without_handler_passes_raw_text() {
-    let handler = "";
     let text = "Some channel message";
-    let content = if handler.is_empty() {
-        text.to_string()
-    } else {
-        format!("[handler:{handler}]\n{text}")
-    };
+    let content = build_content("", text);
 
     assert!(!content.starts_with("[handler:"));
     assert_eq!(content, "Some channel message");
+
+    // Also verify that a non-empty handler does produce the prefix.
+    let with_handler = build_content("trading_signal", text);
+    assert!(with_handler.starts_with("[handler:trading_signal]"));
+}
+
+/// Build message content the same way the production listen loop does:
+/// prepend the handler prefix only when the handler string is non-empty.
+fn build_content(handler: &str, text: &str) -> String {
+    if handler.is_empty() {
+        text.to_string()
+    } else {
+        format!("[handler:{handler}]\n{text}")
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -107,24 +116,28 @@ fn signal_without_handler_passes_raw_text() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(feature = "channel-telegram-user")]
-#[test]
-fn channel_construction_from_config() {
-    use hrafn::channels::telegram_user::TelegramUserChannel;
-    use hrafn::channels::traits::Channel;
+fn test_config(channel: &str, handler: &str) -> hrafn::config::TelegramUserConfig {
     use hrafn::config::{TelegramUserConfig, TelegramUserWatchConfig};
-
-    let config = TelegramUserConfig {
+    TelegramUserConfig {
         api_id: 12345,
         api_hash: "test_hash".to_string(),
         phone: "+1 555 0100".to_string(),
         session_file: "/tmp/test.session".to_string(),
         watch: vec![TelegramUserWatchConfig {
-            channel: "test_channel".to_string(),
-            handler: "trading_signal".to_string(),
+            channel: channel.to_string(),
+            handler: handler.to_string(),
         }],
         reply_via_bot: Some("@test_bot".to_string()),
-    };
+    }
+}
 
+#[cfg(feature = "channel-telegram-user")]
+#[test]
+fn channel_construction_from_config() {
+    use hrafn::channels::telegram_user::TelegramUserChannel;
+    use hrafn::channels::traits::Channel;
+
+    let config = test_config("test_channel", "trading_signal");
     let channel = TelegramUserChannel::new(&config);
     assert_eq!(channel.name(), "telegram_user");
 }
@@ -138,20 +151,8 @@ fn channel_construction_from_config() {
 async fn send_is_noop() {
     use hrafn::channels::telegram_user::TelegramUserChannel;
     use hrafn::channels::traits::{Channel, SendMessage};
-    use hrafn::config::{TelegramUserConfig, TelegramUserWatchConfig};
 
-    let config = TelegramUserConfig {
-        api_id: 12345,
-        api_hash: "test_hash".to_string(),
-        phone: "+1 555 0100".to_string(),
-        session_file: "/tmp/test.session".to_string(),
-        watch: vec![TelegramUserWatchConfig {
-            channel: "test".to_string(),
-            handler: "".to_string(),
-        }],
-        reply_via_bot: Some("@test_bot".to_string()),
-    };
-
+    let config = test_config("test", "");
     let channel = TelegramUserChannel::new(&config);
     let msg = SendMessage::new("hello", "@someone");
 
@@ -166,7 +167,7 @@ async fn send_is_noop() {
 
 #[test]
 fn multiple_watch_configs_produce_distinct_messages() {
-    let channels = vec![("channel_a", "handler_1"), ("channel_b", "handler_2")];
+    let channels = [("channel_a", "handler_1"), ("channel_b", "handler_2")];
 
     let messages: Vec<ChannelMessage> = channels
         .iter()
