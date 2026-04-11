@@ -92,8 +92,11 @@ pub(crate) fn fast_trim_tool_results(
     for msg in &mut history[..cutoff] {
         if msg.role == "tool" && msg.content.len() > trim_to {
             let original_len = msg.content.len();
-            msg.content = truncate_tool_message(&msg.content, trim_to);
-            saved += original_len - msg.content.len();
+            let truncated = truncate_tool_message(&msg.content, trim_to);
+            if truncated.len() < original_len {
+                saved += original_len - truncated.len();
+                msg.content = truncated;
+            }
         }
     }
     saved
