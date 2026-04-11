@@ -14,7 +14,6 @@
 //! To add a new channel, implement [`Channel`] in a new submodule and wire it into
 //! [`start_channels`]. See `AGENTS.md` §7.2 for the full change playbook.
 
-pub mod acp_server;
 pub mod bluesky;
 pub mod clawdtalk;
 pub mod cli;
@@ -51,6 +50,7 @@ pub mod session_store;
 pub mod signal;
 pub mod slack;
 pub mod stall_watchdog;
+pub mod stdio_rpc;
 #[cfg(feature = "channel-telegram")]
 pub mod telegram;
 pub mod traits;

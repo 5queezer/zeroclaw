@@ -11,7 +11,7 @@ Last verified: **March 26, 2026**.
 | `onboard` | Initialize workspace/config quickly or interactively |
 | `agent` | Run interactive chat or single-message mode |
 | `gateway` | Start webhook and WhatsApp HTTP gateway |
-| `acp` | Start ACP (Agent Control Protocol) server over stdio |
+| `stdio-rpc` | Start JSON-RPC session server over stdio |
 | `daemon` | Start supervised runtime (gateway + channels + optional heartbeat/scheduler) |
 | `service` | Manage user-level OS service lifecycle |
 | `doctor` | Run diagnostics and freshness checks |
@@ -61,13 +61,13 @@ Tip:
 
 - In interactive chat, you can ask for route changes in natural language (for example “conversation uses kimi, coding uses gpt-5.3-codex”); the assistant can persist this via tool `model_routing_config`.
 
-### `acp`
+### `stdio-rpc`
 
-- `hrafn acp`
-- `hrafn acp --max-sessions <N>`
-- `hrafn acp --session-timeout <SECONDS>`
+- `hrafn stdio-rpc`
+- `hrafn stdio-rpc --max-sessions <N>`
+- `hrafn stdio-rpc --session-timeout <SECONDS>`
 
-Start the ACP (Agent Control Protocol) server for IDE and tool integration.
+Start the JSON-RPC session server for IDE and tool integration.
 
 - Uses JSON-RPC 2.0 over stdin/stdout
 - Supports methods: `initialize`, `session/new`, `session/prompt`, `session/stop`

@@ -255,9 +255,12 @@ Examples:
         gateway_command: Option<hrafn::GatewayCommands>,
     },
 
-    /// Start ACP (Agent Control Protocol) server over stdio
-    #[command(long_about = "\
-Start the ACP server (JSON-RPC 2.0 over stdio).
+    /// Start JSON-RPC session server over stdio
+    #[command(
+        name = "stdio-rpc",
+        alias = "acp",
+        long_about = "\
+Start the JSON-RPC session server over stdio.
 
 Launches a JSON-RPC 2.0 server on stdin/stdout for IDE and tool \
 integration. Supports session management and streaming agent \
@@ -266,9 +269,12 @@ responses as notifications.
 Methods: initialize, session/new, session/prompt, session/stop.
 
 Examples:
-  hrafn acp                        # start ACP server
-  hrafn acp --max-sessions 5       # limit concurrent sessions")]
-    Acp {
+  hrafn stdio-rpc                        # start JSON-RPC session server
+  hrafn stdio-rpc --max-sessions 5       # limit concurrent sessions
+
+Note: 'acp' is a deprecated alias for this command."
+    )]
+    StdioRpc {
         /// Maximum concurrent sessions (default: 10)
         #[arg(long)]
         max_sessions: Option<usize>,
@@ -1059,18 +1065,18 @@ async fn main() -> Result<()> {
             .map(|_| ())
         }
 
-        Commands::Acp {
+        Commands::StdioRpc {
             max_sessions,
             session_timeout,
         } => {
-            let mut acp_config = channels::acp_server::AcpServerConfig::default();
+            let mut rpc_config = channels::stdio_rpc::StdioRpcConfig::default();
             if let Some(max) = max_sessions {
-                acp_config.max_sessions = max;
+                rpc_config.max_sessions = max;
             }
             if let Some(timeout) = session_timeout {
-                acp_config.session_timeout_secs = timeout;
+                rpc_config.session_timeout_secs = timeout;
             }
-            let server = channels::acp_server::AcpServer::new(config, acp_config);
+            let server = channels::stdio_rpc::StdioRpcServer::new(config, rpc_config);
             server.run().await
         }
 
@@ -2949,5 +2955,24 @@ mod tests {
         let final_temperature = user_temperature.unwrap_or(config.default_temperature);
 
         assert!((final_temperature - 0.7).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn stdio_rpc_command_parses() {
+        let cli =
+            Cli::try_parse_from(["hrafn", "stdio-rpc"]).expect("stdio-rpc command should parse");
+        match cli.command {
+            Commands::StdioRpc { .. } => {}
+            other => panic!("expected StdioRpc command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn acp_alias_parses_to_stdio_rpc() {
+        let cli = Cli::try_parse_from(["hrafn", "acp"]).expect("acp alias should parse");
+        match cli.command {
+            Commands::StdioRpc { .. } => {}
+            other => panic!("expected StdioRpc command via acp alias, got {other:?}"),
+        }
     }
 }
