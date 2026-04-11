@@ -1,0 +1,19 @@
+[book]
+title = "Hrafn Documentation"
+authors = ["Christian Pojoni"]
+language = "en"
+src = "docs"
+
+[build]
+build-dir = "book"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/5queezer/hrafn"
+edit-url-template = "https://github.com/5queezer/hrafn/edit/master/{path}"
+site-url = "https://hrafn.vasudev.xyz/"
+cname = "hrafn.vasudev.xyz"
+
+[output.html.search]
+enable = true

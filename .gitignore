@@ -61,3 +61,6 @@ playground/
 
 # Temporary rustc output
 rust_out
+
+# mdBook build output
+/book/
