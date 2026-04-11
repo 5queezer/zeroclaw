@@ -124,6 +124,9 @@ pub mod verifiable_intent;
 #[cfg(feature = "plugins-wasm")]
 pub mod plugins;
 
+#[cfg(feature = "tui")]
+pub mod tui;
+
 #[cfg(feature = "desktop")]
 pub use config::Config;
 
