@@ -85,34 +85,38 @@ impl BM25Index {
         doc_token.starts_with(query_term) || query_term.starts_with(doc_token)
     }
 
+    /// Precompute IDF values for query terms. Called once per search() to avoid
+    /// repeated full-corpus scans inside score().
+    fn precompute_idfs(&self, query_terms: &[String]) -> Vec<f64> {
+        query_terms
+            .iter()
+            .map(|qt| {
+                let nq = match self.doc_freq.get(qt) {
+                    Some(&n) => n as f64,
+                    None => self
+                        .docs
+                        .iter()
+                        .filter(|d| d.iter().any(|t| Self::term_matches(qt, t)))
+                        .count() as f64,
+                };
+                ((self.n as f64 - nq + 0.5) / (nq + 0.5) + 1.0).ln()
+            })
+            .collect()
+    }
+
     /// Score a query against document at `doc_idx`.
     /// Uses prefix matching for term frequency to handle morphological
     /// variants (e.g. "file" matches "files" and vice versa).
-    fn score(&self, query_terms: &[String], doc_idx: usize) -> f64 {
+    fn score(&self, query_terms: &[String], idfs: &[f64], doc_idx: usize) -> f64 {
         let dl = self.doc_lengths[doc_idx];
         let doc = &self.docs[doc_idx];
         let mut total = 0.0f64;
 
-        for qt in query_terms {
-            // Term frequency: count doc tokens that prefix-match the query term
+        for (qt, &idf) in query_terms.iter().zip(idfs) {
             let tf = doc.iter().filter(|t| Self::term_matches(qt, t)).count() as f64;
             if tf == 0.0 {
                 continue;
             }
-
-            // IDF: ln((N - n(q) + 0.5) / (n(q) + 0.5) + 1)
-            // Use exact doc_freq if available, else compute via prefix matching
-            let nq = match self.doc_freq.get(qt) {
-                Some(&n) => n as f64,
-                None => self
-                    .docs
-                    .iter()
-                    .filter(|d| d.iter().any(|t| Self::term_matches(qt, t)))
-                    .count() as f64,
-            };
-            let idf = ((self.n as f64 - nq + 0.5) / (nq + 0.5) + 1.0).ln();
-
-            // BM25 term score
             let numerator = tf * (Self::K1 + 1.0);
             let denominator = tf + Self::K1 * (1.0 - Self::B + Self::B * dl / self.avgdl);
             total += idf * numerator / denominator;
@@ -237,15 +241,26 @@ impl DeferredMcpToolSet {
             return self.stubs.iter().take(max_results).collect();
         }
 
+        let idfs = self.bm25.precompute_idfs(&terms);
+
         let mut scored: Vec<(usize, f64)> = self
             .stubs
             .iter()
             .enumerate()
-            .map(|(idx, _)| (idx, self.bm25.score(&terms, idx)))
+            .map(|(idx, _)| (idx, self.bm25.score(&terms, &idfs, idx)))
             .filter(|(_, score)| *score > 0.0)
             .collect();
 
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        // Sort by score descending, then by name ascending for deterministic tie-breaking.
+        scored.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    self.stubs[a.0]
+                        .prefixed_name
+                        .cmp(&self.stubs[b.0].prefixed_name)
+                })
+        });
         scored
             .into_iter()
             .take(max_results)
@@ -272,27 +287,66 @@ impl DeferredMcpToolSet {
 
 // ── Eager tool matching ──────────────────────────────────────────────────
 
+/// Build server-scoped eager patterns from per-server config.
+/// Each pattern is prefixed with `server__` so it matches the prefixed tool name.
+pub fn build_eager_patterns(servers: &[(String, Vec<String>)]) -> Vec<String> {
+    servers
+        .iter()
+        .flat_map(|(server_name, patterns)| {
+            patterns
+                .iter()
+                .map(move |p| format!("{}__{}", server_name, p))
+        })
+        .collect()
+}
+
 /// Check if a tool's prefixed name matches any of the eager patterns.
-/// Supports simple glob: `*` at start/end/both, or exact match.
+/// Supports simple glob matching with `*` wildcards:
 /// - `"*"` matches everything
 /// - `"*suffix"` matches names ending with `suffix`
 /// - `"prefix*"` matches names starting with `prefix`
 /// - `"*infix*"` matches names containing `infix`
+/// - `"prefix*infix*"` matches names starting with `prefix` and containing `infix` after it
+///
+/// General rule: split on `*`, check that all literal segments appear in order.
+/// The first segment must be a prefix; the last segment must be a suffix;
+/// interior segments must appear (in order) anywhere in between.
 pub fn is_eager_match(name: &str, patterns: &[String]) -> bool {
     patterns.iter().any(|pat| {
-        if pat == "*" {
-            true
-        } else if pat.starts_with('*') && pat.ends_with('*') && pat.len() > 2 {
-            // *infix* — contains match
-            let infix = &pat[1..pat.len() - 1];
-            name.contains(infix)
-        } else if let Some(suffix) = pat.strip_prefix('*') {
-            name.ends_with(suffix)
-        } else if let Some(prefix) = pat.strip_suffix('*') {
-            name.starts_with(prefix)
-        } else {
-            name == pat
+        if !pat.contains('*') {
+            return name == pat;
         }
+        let parts: Vec<&str> = pat.split('*').collect();
+        // All parts empty means the pattern is only `*`s — matches everything.
+        if parts.iter().all(|p| p.is_empty()) {
+            return true;
+        }
+        let mut remaining = name;
+        for (i, part) in parts.iter().enumerate() {
+            if part.is_empty() {
+                continue;
+            }
+            if i == 0 {
+                // First segment must be a prefix
+                if !remaining.starts_with(part) {
+                    return false;
+                }
+                remaining = &remaining[part.len()..];
+            } else if i == parts.len() - 1 {
+                // Last segment must be a suffix
+                if !remaining.ends_with(part) {
+                    return false;
+                }
+                // No need to advance — this is the final check.
+            } else {
+                // Interior segment: find it anywhere in the remainder
+                match remaining.find(part) {
+                    Some(pos) => remaining = &remaining[pos + part.len()..],
+                    None => return false,
+                }
+            }
+        }
+        true
     })
 }
 
@@ -694,11 +748,32 @@ mod tests {
         assert!(is_eager_match("muninn__muninn_recall", &patterns));
         assert!(is_eager_match("muninn__muninn_recall_tree", &patterns));
         assert!(!is_eager_match("muninn__muninn_remember", &patterns));
+
+        // Server-scoped infix patterns built via build_eager_patterns
+        let server_patterns =
+            build_eager_patterns(&[("muninn".to_string(), vec!["*recall*".to_string()])]);
+        assert_eq!(server_patterns, vec!["muninn__*recall*"]);
+        assert!(is_eager_match("muninn__muninn_recall", &server_patterns));
+        assert!(is_eager_match(
+            "muninn__muninn_recall_tree",
+            &server_patterns
+        ));
+        assert!(!is_eager_match("muninn__muninn_remember", &server_patterns));
     }
 
     #[test]
     fn eager_match_wildcard_all() {
         let patterns = vec!["*".to_string()];
         assert!(is_eager_match("anything", &patterns));
+    }
+
+    #[test]
+    fn build_eager_patterns_prefixes_all() {
+        let servers = vec![(
+            "muninn".to_string(),
+            vec!["*recall*".to_string(), "remember".to_string()],
+        )];
+        let patterns = build_eager_patterns(&servers);
+        assert_eq!(patterns, vec!["muninn__*recall*", "muninn__remember"]);
     }
 }
