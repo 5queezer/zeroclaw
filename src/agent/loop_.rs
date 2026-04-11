@@ -3617,9 +3617,52 @@ pub async fn run(
             Ok(registry) => {
                 let registry = std::sync::Arc::new(registry);
                 if config.mcp.deferred_loading {
-                    // Deferred path: build stubs and register tool_search
+                    // Build server-scoped eager patterns
+                    let server_patterns: Vec<(String, Vec<String>)> = config
+                        .mcp
+                        .servers
+                        .iter()
+                        .map(|s| (s.name.clone(), s.eager_tools.clone()))
+                        .collect();
+                    let eager_patterns =
+                        crate::tools::mcp_deferred::build_eager_patterns(&server_patterns);
+
+                    // Try to load eager tools first, track which ones actually loaded
+                    let all_names = registry.tool_names();
+                    let mut eagerly_loaded: Vec<String> = Vec::new();
+                    for name in &all_names {
+                        if !crate::tools::mcp_deferred::is_eager_match(name, &eager_patterns) {
+                            continue;
+                        }
+                        if let Some(def) = registry.get_tool_def(name).await {
+                            let wrapper: std::sync::Arc<dyn Tool> =
+                                std::sync::Arc::new(crate::tools::McpToolWrapper::new(
+                                    name.clone(),
+                                    def,
+                                    std::sync::Arc::clone(&registry),
+                                ));
+                            if let Some(ref handle) = delegate_handle {
+                                handle.write().push(std::sync::Arc::clone(&wrapper));
+                            }
+                            tools_registry.push(Box::new(crate::tools::ArcToolRef(wrapper)));
+                            eagerly_loaded.push(name.clone());
+                        } else {
+                            tracing::warn!(
+                                "MCP eager: tool {name} matched pattern but get_tool_def returned None — leaving in deferred set"
+                            );
+                        }
+                    }
+                    if !eagerly_loaded.is_empty() {
+                        tracing::info!(
+                            "MCP eager: {} tool(s) registered directly",
+                            eagerly_loaded.len()
+                        );
+                    }
+
+                    // Build deferred set excluding only successfully loaded tools
                     let deferred_set = crate::tools::DeferredMcpToolSet::from_registry(
                         std::sync::Arc::clone(&registry),
+                        &eagerly_loaded,
                     )
                     .await;
                     tracing::info!(
@@ -3627,6 +3670,7 @@ pub async fn run(
                         deferred_set.len(),
                         registry.server_count()
                     );
+
                     deferred_section =
                         crate::tools::mcp_deferred::build_deferred_tools_section(&deferred_set);
                     let activated = std::sync::Arc::new(std::sync::Mutex::new(
@@ -4567,8 +4611,52 @@ pub async fn process_message(
             Ok(registry) => {
                 let registry = std::sync::Arc::new(registry);
                 if config.mcp.deferred_loading {
+                    // Build server-scoped eager patterns
+                    let server_patterns: Vec<(String, Vec<String>)> = config
+                        .mcp
+                        .servers
+                        .iter()
+                        .map(|s| (s.name.clone(), s.eager_tools.clone()))
+                        .collect();
+                    let eager_patterns =
+                        crate::tools::mcp_deferred::build_eager_patterns(&server_patterns);
+
+                    // Try to load eager tools first, track which ones actually loaded
+                    let all_names = registry.tool_names();
+                    let mut eagerly_loaded: Vec<String> = Vec::new();
+                    for name in &all_names {
+                        if !crate::tools::mcp_deferred::is_eager_match(name, &eager_patterns) {
+                            continue;
+                        }
+                        if let Some(def) = registry.get_tool_def(name).await {
+                            let wrapper: std::sync::Arc<dyn Tool> =
+                                std::sync::Arc::new(crate::tools::McpToolWrapper::new(
+                                    name.clone(),
+                                    def,
+                                    std::sync::Arc::clone(&registry),
+                                ));
+                            if let Some(ref handle) = delegate_handle_pm {
+                                handle.write().push(std::sync::Arc::clone(&wrapper));
+                            }
+                            tools_registry.push(Box::new(crate::tools::ArcToolRef(wrapper)));
+                            eagerly_loaded.push(name.clone());
+                        } else {
+                            tracing::warn!(
+                                "MCP eager: tool {name} matched pattern but get_tool_def returned None — leaving in deferred set"
+                            );
+                        }
+                    }
+                    if !eagerly_loaded.is_empty() {
+                        tracing::info!(
+                            "MCP eager: {} tool(s) registered directly",
+                            eagerly_loaded.len()
+                        );
+                    }
+
+                    // Build deferred set excluding only successfully loaded tools
                     let deferred_set = crate::tools::DeferredMcpToolSet::from_registry(
                         std::sync::Arc::clone(&registry),
+                        &eagerly_loaded,
                     )
                     .await;
                     tracing::info!(
@@ -4576,6 +4664,7 @@ pub async fn process_message(
                         deferred_set.len(),
                         registry.server_count()
                     );
+
                     deferred_section =
                         crate::tools::mcp_deferred::build_deferred_tools_section(&deferred_set);
                     let activated = std::sync::Arc::new(std::sync::Mutex::new(

@@ -512,14 +512,60 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
             Ok(registry) => {
                 let registry = std::sync::Arc::new(registry);
                 if config.mcp.deferred_loading {
-                    let deferred_set =
-                        tools::DeferredMcpToolSet::from_registry(std::sync::Arc::clone(&registry))
-                            .await;
+                    // Build server-scoped eager patterns
+                    let server_patterns: Vec<(String, Vec<String>)> = config
+                        .mcp
+                        .servers
+                        .iter()
+                        .map(|s| (s.name.clone(), s.eager_tools.clone()))
+                        .collect();
+                    let eager_patterns =
+                        tools::mcp_deferred::build_eager_patterns(&server_patterns);
+
+                    // Try to load eager tools first, track which ones actually loaded
+                    let all_names = registry.tool_names();
+                    let mut eagerly_loaded: Vec<String> = Vec::new();
+                    for name in &all_names {
+                        if !tools::mcp_deferred::is_eager_match(name, &eager_patterns) {
+                            continue;
+                        }
+                        if let Some(def) = registry.get_tool_def(name).await {
+                            let wrapper: std::sync::Arc<dyn tools::Tool> =
+                                std::sync::Arc::new(tools::McpToolWrapper::new(
+                                    name.clone(),
+                                    def,
+                                    std::sync::Arc::clone(&registry),
+                                ));
+                            if let Some(ref handle) = delegate_handle_gw {
+                                handle.write().push(std::sync::Arc::clone(&wrapper));
+                            }
+                            tools_registry_raw.push(Box::new(tools::ArcToolRef(wrapper)));
+                            eagerly_loaded.push(name.clone());
+                        } else {
+                            tracing::warn!(
+                                "MCP eager: tool {name} matched pattern but get_tool_def returned None — leaving in deferred set"
+                            );
+                        }
+                    }
+                    if !eagerly_loaded.is_empty() {
+                        tracing::info!(
+                            "Gateway MCP eager: {} tool(s) registered directly",
+                            eagerly_loaded.len()
+                        );
+                    }
+
+                    // Build deferred set excluding only successfully loaded tools
+                    let deferred_set = tools::DeferredMcpToolSet::from_registry(
+                        std::sync::Arc::clone(&registry),
+                        &eagerly_loaded,
+                    )
+                    .await;
                     tracing::info!(
                         "Gateway MCP deferred: {} tool stub(s) from {} server(s)",
                         deferred_set.len(),
                         registry.server_count()
                     );
+
                     let activated =
                         std::sync::Arc::new(std::sync::Mutex::new(tools::ActivatedToolSet::new()));
                     tools_registry_raw.push(Box::new(tools::ToolSearchTool::new(

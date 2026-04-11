@@ -129,7 +129,9 @@ Rules:
   server is reachable at the configured URL.
 - **Agent not using tools**: Check that `deferred_loading` is working — the
   agent must call `tool_search` first if deferred loading is enabled (the
-  default). Set `deferred_loading = false` to eagerly load all tool schemas.
+  default). Set `deferred_loading = false` to eagerly load all tool schemas,
+  or add frequently-needed tools to `eager_tools` on the server config so
+  they're available without a `tool_search` roundtrip.
 - **Timeout errors**: Increase `tool_timeout_secs` on the MCP server config:
   ```toml
   [[mcp.servers]]

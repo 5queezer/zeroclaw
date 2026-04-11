@@ -14,6 +14,118 @@ use crate::tools::mcp_protocol::McpToolDef;
 use crate::tools::mcp_tool::McpToolWrapper;
 use crate::tools::traits::{Tool, ToolSpec};
 
+// ── BM25 Index ──────────────────────────────────────────────────────────
+
+/// Precomputed corpus statistics for BM25 scoring.
+struct BM25Index {
+    /// Tokenized documents (one per stub, same order as `stubs`).
+    docs: Vec<Vec<String>>,
+    /// Document lengths (in tokens).
+    doc_lengths: Vec<f64>,
+    /// Average document length across the corpus.
+    avgdl: f64,
+    /// Number of documents containing each term.
+    doc_freq: HashMap<String, usize>,
+    /// Total number of documents.
+    n: usize,
+}
+
+impl BM25Index {
+    const K1: f64 = 1.2;
+    const B: f64 = 0.75;
+
+    /// Build the index from stub name+description pairs.
+    fn build(stubs: &[DeferredMcpToolStub]) -> Self {
+        let n = stubs.len();
+        let mut docs = Vec::with_capacity(n);
+        let mut doc_lengths = Vec::with_capacity(n);
+        let mut doc_freq: HashMap<String, usize> = HashMap::new();
+
+        for stub in stubs {
+            let tokens = Self::tokenize(&stub.prefixed_name, &stub.description);
+            doc_lengths.push(tokens.len() as f64);
+
+            // Count unique terms per document for doc frequency
+            let mut seen = std::collections::HashSet::new();
+            for token in &tokens {
+                if seen.insert(token.clone()) {
+                    *doc_freq.entry(token.clone()).or_insert(0) += 1;
+                }
+            }
+            docs.push(tokens);
+        }
+
+        let total_len: f64 = doc_lengths.iter().sum();
+        let avgdl = if n > 0 { total_len / n as f64 } else { 1.0 };
+
+        Self {
+            docs,
+            doc_lengths,
+            avgdl,
+            doc_freq,
+            n,
+        }
+    }
+
+    /// Tokenize a name and description into lowercase terms, splitting on
+    /// whitespace, underscores, and hyphens.
+    fn tokenize(name: &str, description: &str) -> Vec<String> {
+        let combined = format!("{} {}", name, description);
+        combined
+            .split(|c: char| c.is_whitespace() || c == '_' || c == '-')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_ascii_lowercase())
+            .collect()
+    }
+
+    /// Check if a query term matches a document token.
+    /// Matches if either starts with the other (handles "file"/"files" variants).
+    #[inline]
+    fn term_matches(query_term: &str, doc_token: &str) -> bool {
+        doc_token.starts_with(query_term) || query_term.starts_with(doc_token)
+    }
+
+    /// Precompute IDF values for query terms. Called once per search() to avoid
+    /// repeated full-corpus scans inside score().
+    fn precompute_idfs(&self, query_terms: &[String]) -> Vec<f64> {
+        query_terms
+            .iter()
+            .map(|qt| {
+                let nq = match self.doc_freq.get(qt) {
+                    Some(&n) => n as f64,
+                    None => self
+                        .docs
+                        .iter()
+                        .filter(|d| d.iter().any(|t| Self::term_matches(qt, t)))
+                        .count() as f64,
+                };
+                ((self.n as f64 - nq + 0.5) / (nq + 0.5) + 1.0).ln()
+            })
+            .collect()
+    }
+
+    /// Score a query against document at `doc_idx`.
+    /// Uses prefix matching for term frequency to handle morphological
+    /// variants (e.g. "file" matches "files" and vice versa).
+    fn score(&self, query_terms: &[String], idfs: &[f64], doc_idx: usize) -> f64 {
+        let dl = self.doc_lengths[doc_idx];
+        let doc = &self.docs[doc_idx];
+        let mut total = 0.0f64;
+
+        for (qt, &idf) in query_terms.iter().zip(idfs) {
+            let tf = doc.iter().filter(|t| Self::term_matches(qt, t)).count() as f64;
+            if tf == 0.0 {
+                continue;
+            }
+            let numerator = tf * (Self::K1 + 1.0);
+            let denominator = tf + Self::K1 * (1.0 - Self::B + Self::B * dl / self.avgdl);
+            total += idf * numerator / denominator;
+        }
+
+        total
+    }
+}
+
 // ── DeferredMcpToolStub ──────────────────────────────────────────────────
 
 /// A lightweight stub representing a known-but-not-yet-loaded MCP tool.
@@ -51,26 +163,47 @@ impl DeferredMcpToolStub {
 // ── DeferredMcpToolSet ───────────────────────────────────────────────────
 
 /// Collection of all deferred MCP tool stubs discovered at startup.
-/// Provides keyword search for `tool_search`.
+/// Provides BM25-ranked keyword search for `tool_search`.
 #[derive(Clone)]
 pub struct DeferredMcpToolSet {
     /// All stubs — exposed for test construction.
     pub stubs: Vec<DeferredMcpToolStub>,
     /// Shared registry — exposed for test construction.
     pub registry: Arc<McpRegistry>,
+    /// Precomputed BM25 index over stub names + descriptions.
+    bm25: Arc<BM25Index>,
 }
 
 impl DeferredMcpToolSet {
-    /// Build the set from a connected [`McpRegistry`].
-    pub async fn from_registry(registry: Arc<McpRegistry>) -> Self {
+    /// Build the set from a connected [`McpRegistry`], excluding tools whose
+    /// prefixed names match any of the `eager_patterns` globs.
+    pub async fn from_registry(registry: Arc<McpRegistry>, eager_patterns: &[String]) -> Self {
         let names = registry.tool_names();
         let mut stubs = Vec::with_capacity(names.len());
         for name in names {
+            if is_eager_match(&name, eager_patterns) {
+                continue;
+            }
             if let Some(def) = registry.get_tool_def(&name).await {
                 stubs.push(DeferredMcpToolStub::new(name, def));
             }
         }
-        Self { stubs, registry }
+        let bm25 = Arc::new(BM25Index::build(&stubs));
+        Self {
+            stubs,
+            registry,
+            bm25,
+        }
+    }
+
+    /// Build from pre-constructed stubs (for tests and internal use).
+    pub(crate) fn from_stubs(stubs: Vec<DeferredMcpToolStub>, registry: Arc<McpRegistry>) -> Self {
+        let bm25 = Arc::new(BM25Index::build(&stubs));
+        Self {
+            stubs,
+            registry,
+            bm25,
+        }
     }
 
     /// All stub names (for rendering in the system prompt).
@@ -96,40 +229,42 @@ impl DeferredMcpToolSet {
         self.stubs.iter().find(|s| s.prefixed_name == name)
     }
 
-    /// Keyword search — returns stubs whose name or description contains any
-    /// of the query terms (case-insensitive). Results are ranked by number of
-    /// matching terms (descending).
+    /// BM25 keyword search — returns stubs ranked by Okapi BM25 relevance.
+    /// Query is tokenized on whitespace, underscores, and hyphens.
     pub fn search(&self, query: &str, max_results: usize) -> Vec<&DeferredMcpToolStub> {
         let terms: Vec<String> = query
-            .split_whitespace()
+            .split(|c: char| c.is_whitespace() || c == '_' || c == '-')
+            .filter(|s| !s.is_empty())
             .map(|t| t.to_ascii_lowercase())
             .collect();
         if terms.is_empty() {
             return self.stubs.iter().take(max_results).collect();
         }
 
-        let mut scored: Vec<(&DeferredMcpToolStub, usize)> = self
+        let idfs = self.bm25.precompute_idfs(&terms);
+
+        let mut scored: Vec<(usize, f64)> = self
             .stubs
             .iter()
-            .filter_map(|stub| {
-                let haystack = format!(
-                    "{} {}",
-                    stub.prefixed_name.to_ascii_lowercase(),
-                    stub.description.to_ascii_lowercase()
-                );
-                let hits = terms
-                    .iter()
-                    .filter(|t| haystack.contains(t.as_str()))
-                    .count();
-                if hits > 0 { Some((stub, hits)) } else { None }
-            })
+            .enumerate()
+            .map(|(idx, _)| (idx, self.bm25.score(&terms, &idfs, idx)))
+            .filter(|(_, score)| *score > 0.0)
             .collect();
 
-        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        // Sort by score descending, then by name ascending for deterministic tie-breaking.
+        scored.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    self.stubs[a.0]
+                        .prefixed_name
+                        .cmp(&self.stubs[b.0].prefixed_name)
+                })
+        });
         scored
             .into_iter()
             .take(max_results)
-            .map(|(s, _)| s)
+            .map(|(idx, _)| &self.stubs[idx])
             .collect()
     }
 
@@ -148,6 +283,71 @@ impl DeferredMcpToolSet {
             wrapper.spec()
         })
     }
+}
+
+// ── Eager tool matching ──────────────────────────────────────────────────
+
+/// Build server-scoped eager patterns from per-server config.
+/// Each pattern is prefixed with `server__` so it matches the prefixed tool name.
+pub fn build_eager_patterns(servers: &[(String, Vec<String>)]) -> Vec<String> {
+    servers
+        .iter()
+        .flat_map(|(server_name, patterns)| {
+            patterns
+                .iter()
+                .map(move |p| format!("{}__{}", server_name, p))
+        })
+        .collect()
+}
+
+/// Check if a tool's prefixed name matches any of the eager patterns.
+/// Supports simple glob matching with `*` wildcards:
+/// - `"*"` matches everything
+/// - `"*suffix"` matches names ending with `suffix`
+/// - `"prefix*"` matches names starting with `prefix`
+/// - `"*infix*"` matches names containing `infix`
+/// - `"prefix*infix*"` matches names starting with `prefix` and containing `infix` after it
+///
+/// General rule: split on `*`, check that all literal segments appear in order.
+/// The first segment must be a prefix; the last segment must be a suffix;
+/// interior segments must appear (in order) anywhere in between.
+pub fn is_eager_match(name: &str, patterns: &[String]) -> bool {
+    patterns.iter().any(|pat| {
+        if !pat.contains('*') {
+            return name == pat;
+        }
+        let parts: Vec<&str> = pat.split('*').collect();
+        // All parts empty means the pattern is only `*`s — matches everything.
+        if parts.iter().all(|p| p.is_empty()) {
+            return true;
+        }
+        let mut remaining = name;
+        for (i, part) in parts.iter().enumerate() {
+            if part.is_empty() {
+                continue;
+            }
+            if i == 0 {
+                // First segment must be a prefix
+                if !remaining.starts_with(part) {
+                    return false;
+                }
+                remaining = &remaining[part.len()..];
+            } else if i == parts.len() - 1 {
+                // Last segment must be a suffix
+                if !remaining.ends_with(part) {
+                    return false;
+                }
+                // No need to advance — this is the final check.
+            } else {
+                // Interior segment: find it anywhere in the remainder
+                match remaining.find(part) {
+                    Some(pos) => remaining = &remaining[pos + part.len()..],
+                    None => return false,
+                }
+            }
+        }
+        true
+    })
 }
 
 // ── ActivatedToolSet ─────────────────────────────────────────────────────
@@ -266,6 +466,17 @@ mod tests {
             input_schema: serde_json::json!({"type": "object", "properties": {}}),
         };
         DeferredMcpToolStub::new(name.to_string(), def)
+    }
+
+    /// Helper to build a test DeferredMcpToolSet with BM25 index.
+    fn make_set(stubs: Vec<DeferredMcpToolStub>) -> DeferredMcpToolSet {
+        let registry = std::sync::Arc::new(
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(McpRegistry::connect_all(&[]))
+                .unwrap(),
+        );
+        DeferredMcpToolSet::from_stubs(stubs, registry)
     }
 
     #[test]
@@ -390,33 +601,16 @@ mod tests {
 
     #[test]
     fn build_deferred_section_empty_when_no_stubs() {
-        let set = DeferredMcpToolSet {
-            stubs: vec![],
-            registry: std::sync::Arc::new(
-                tokio::runtime::Runtime::new()
-                    .unwrap()
-                    .block_on(McpRegistry::connect_all(&[]))
-                    .unwrap(),
-            ),
-        };
+        let set = make_set(vec![]);
         assert!(build_deferred_tools_section(&set).is_empty());
     }
 
     #[test]
     fn build_deferred_section_lists_names() {
-        let stubs = vec![
+        let set = make_set(vec![
             make_stub("fs__read_file", "Read a file"),
             make_stub("git__status", "Git status"),
-        ];
-        let set = DeferredMcpToolSet {
-            stubs,
-            registry: std::sync::Arc::new(
-                tokio::runtime::Runtime::new()
-                    .unwrap()
-                    .block_on(McpRegistry::connect_all(&[]))
-                    .unwrap(),
-            ),
-        };
+        ]);
         let section = build_deferred_tools_section(&set);
         assert!(section.contains("<available-deferred-tools>"));
         assert!(section.contains("fs__read_file - Read a file"));
@@ -426,16 +620,7 @@ mod tests {
 
     #[test]
     fn build_deferred_section_includes_tool_search_instruction() {
-        let stubs = vec![make_stub("fs__read_file", "Read a file")];
-        let set = DeferredMcpToolSet {
-            stubs,
-            registry: std::sync::Arc::new(
-                tokio::runtime::Runtime::new()
-                    .unwrap()
-                    .block_on(McpRegistry::connect_all(&[]))
-                    .unwrap(),
-            ),
-        };
+        let set = make_set(vec![make_stub("fs__read_file", "Read a file")]);
         let section = build_deferred_tools_section(&set);
         assert!(
             section.contains("tool_search"),
@@ -449,20 +634,11 @@ mod tests {
 
     #[test]
     fn build_deferred_section_multiple_servers() {
-        let stubs = vec![
+        let set = make_set(vec![
             make_stub("server_a__list", "List items"),
             make_stub("server_a__create", "Create item"),
             make_stub("server_b__query", "Query records"),
-        ];
-        let set = DeferredMcpToolSet {
-            stubs,
-            registry: std::sync::Arc::new(
-                tokio::runtime::Runtime::new()
-                    .unwrap()
-                    .block_on(McpRegistry::connect_all(&[]))
-                    .unwrap(),
-            ),
-        };
+        ]);
         let section = build_deferred_tools_section(&set);
         assert!(section.contains("server_a__list"));
         assert!(section.contains("server_a__create"));
@@ -474,62 +650,59 @@ mod tests {
     }
 
     #[test]
-    fn keyword_search_ranks_by_hits() {
-        let stubs = vec![
+    fn keyword_search_ranks_by_bm25() {
+        let set = make_set(vec![
             make_stub("fs__read_file", "Read a file from disk"),
             make_stub("fs__write_file", "Write a file to disk"),
             make_stub("git__log", "Show git log"),
-        ];
-        let set = DeferredMcpToolSet {
-            stubs,
-            registry: std::sync::Arc::new(
-                tokio::runtime::Runtime::new()
-                    .unwrap()
-                    .block_on(McpRegistry::connect_all(&[]))
-                    .unwrap(),
-            ),
-        };
+        ]);
 
-        // "file read" should rank fs__read_file highest (2 hits vs 1)
+        // "file read" should rank fs__read_file highest (both terms match)
         let results = set.search("file read", 5);
         assert!(!results.is_empty());
         assert_eq!(results[0].prefixed_name, "fs__read_file");
     }
 
     #[test]
+    fn bm25_ranks_rare_term_higher() {
+        // "quantum" appears in only one doc, "tool" in all — BM25 should rank
+        // the rare-term match higher than common-term matches.
+        let set = make_set(vec![
+            make_stub("srv__alpha", "A common tool for tasks"),
+            make_stub("srv__beta", "Another common tool for tasks"),
+            make_stub("srv__gamma", "Quantum physics simulator tool"),
+        ]);
+
+        let results = set.search("quantum", 5);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].prefixed_name, "srv__gamma");
+
+        // "tool" matches all 3 but with low IDF
+        let results = set.search("tool", 5);
+        assert_eq!(results.len(), 3);
+
+        // "quantum tool" should still rank gamma first (rare term dominates)
+        let results = set.search("quantum tool", 5);
+        assert!(!results.is_empty());
+        assert_eq!(results[0].prefixed_name, "srv__gamma");
+    }
+
+    #[test]
     fn get_by_name_returns_correct_stub() {
-        let stubs = vec![
+        let set = make_set(vec![
             make_stub("a__one", "Tool one"),
             make_stub("b__two", "Tool two"),
-        ];
-        let set = DeferredMcpToolSet {
-            stubs,
-            registry: std::sync::Arc::new(
-                tokio::runtime::Runtime::new()
-                    .unwrap()
-                    .block_on(McpRegistry::connect_all(&[]))
-                    .unwrap(),
-            ),
-        };
+        ]);
         assert!(set.get_by_name("a__one").is_some());
         assert!(set.get_by_name("nonexistent").is_none());
     }
 
     #[test]
     fn search_across_multiple_servers() {
-        let stubs = vec![
+        let set = make_set(vec![
             make_stub("server_a__read_file", "Read a file from disk"),
             make_stub("server_b__read_config", "Read configuration from database"),
-        ];
-        let set = DeferredMcpToolSet {
-            stubs,
-            registry: std::sync::Arc::new(
-                tokio::runtime::Runtime::new()
-                    .unwrap()
-                    .block_on(McpRegistry::connect_all(&[]))
-                    .unwrap(),
-            ),
-        };
+        ]);
 
         // "read" should match stubs from both servers
         let results = set.search("read", 10);
@@ -540,9 +713,67 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].prefixed_name, "server_a__read_file");
 
-        // "config database" should rank server_b highest (2 hits)
+        // "config database" should rank server_b highest (both terms match)
         let results = set.search("config database", 10);
         assert!(!results.is_empty());
         assert_eq!(results[0].prefixed_name, "server_b__read_config");
+    }
+
+    #[test]
+    fn eager_match_exact() {
+        let patterns = vec!["muninn__recall".to_string()];
+        assert!(is_eager_match("muninn__recall", &patterns));
+        assert!(!is_eager_match("muninn__remember", &patterns));
+    }
+
+    #[test]
+    fn eager_match_prefix_glob() {
+        let patterns = vec!["muninn__*".to_string()];
+        assert!(is_eager_match("muninn__recall", &patterns));
+        assert!(is_eager_match("muninn__remember", &patterns));
+        assert!(!is_eager_match("git__status", &patterns));
+    }
+
+    #[test]
+    fn eager_match_suffix_glob() {
+        let patterns = vec!["*__recall".to_string()];
+        assert!(is_eager_match("muninn__recall", &patterns));
+        assert!(is_eager_match("other__recall", &patterns));
+        assert!(!is_eager_match("muninn__remember", &patterns));
+    }
+
+    #[test]
+    fn eager_match_infix_glob() {
+        let patterns = vec!["*recall*".to_string()];
+        assert!(is_eager_match("muninn__muninn_recall", &patterns));
+        assert!(is_eager_match("muninn__muninn_recall_tree", &patterns));
+        assert!(!is_eager_match("muninn__muninn_remember", &patterns));
+
+        // Server-scoped infix patterns built via build_eager_patterns
+        let server_patterns =
+            build_eager_patterns(&[("muninn".to_string(), vec!["*recall*".to_string()])]);
+        assert_eq!(server_patterns, vec!["muninn__*recall*"]);
+        assert!(is_eager_match("muninn__muninn_recall", &server_patterns));
+        assert!(is_eager_match(
+            "muninn__muninn_recall_tree",
+            &server_patterns
+        ));
+        assert!(!is_eager_match("muninn__muninn_remember", &server_patterns));
+    }
+
+    #[test]
+    fn eager_match_wildcard_all() {
+        let patterns = vec!["*".to_string()];
+        assert!(is_eager_match("anything", &patterns));
+    }
+
+    #[test]
+    fn build_eager_patterns_prefixes_all() {
+        let servers = vec![(
+            "muninn".to_string(),
+            vec!["*recall*".to_string(), "remember".to_string()],
+        )];
+        let patterns = build_eager_patterns(&servers);
+        assert_eq!(patterns, vec!["muninn__*recall*", "muninn__remember"]);
     }
 }

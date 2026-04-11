@@ -122,6 +122,75 @@ tools = ["mcp_browser_*"]
 keywords = ["browse", "navigate", "open url", "screenshot"]
 ```
 
+## `[mcp]`
+
+External MCP (Model Context Protocol) server integration. Connects the agent to external tool servers over stdio, HTTP, or SSE transports.
+
+| Key | Default | Notes |
+|---|---|---|
+| `enabled` | `false` | Enable MCP tool loading |
+| `deferred_loading` | `true` | When `true`, MCP tool schemas are NOT sent to the LLM upfront. Only lightweight stubs (name + description) appear in the system prompt. The LLM must call the built-in `tool_search` tool to fetch full schemas before invoking a deferred tool. Reduces context window overhead by ~85% with many MCP tools. |
+
+### `[[mcp.servers]]`
+
+Each entry configures one MCP server.
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `name` | `string` | _(required)_ | Display name, used as tool prefix (`<name>__<tool>`) |
+| `transport` | `"stdio"` \| `"http"` \| `"sse"` | `"stdio"` | Transport type |
+| `command` | `string` | `""` | Executable for stdio transport |
+| `args` | `[string]` | `[]` | Arguments for stdio transport |
+| `env` | `{string: string}` | `{}` | Environment variables for stdio transport |
+| `url` | `string?` | _none_ | URL for HTTP/SSE transports |
+| `headers` | `{string: string}` | `{}` | HTTP headers for HTTP/SSE transports |
+| `tool_timeout_secs` | `u64?` | _none_ | Per-call timeout in seconds |
+| `eager_tools` | `[string]` | `[]` | Tool name patterns loaded eagerly even when `deferred_loading` is `true`. Useful for high-frequency tools the LLM needs every turn without a `tool_search` roundtrip. |
+
+### `eager_tools` patterns
+
+Patterns match against the tool's prefixed name (`<server>__<tool_name>`):
+
+| Pattern | Matches |
+|---|---|
+| `"muninn_recall"` | Exact: `muninn__muninn_recall` (after server prefix) |
+| `"muninn_recall*"` | Prefix: `muninn__muninn_recall`, `muninn__muninn_recall_tree` |
+| `"*recall"` | Suffix: any tool ending in `recall` across all servers |
+| `"*recall*"` | Contains: any tool with `recall` anywhere in the name |
+| `"*"` | All tools from this server (effectively disables deferred loading for it) |
+
+Note: patterns starting with `*` are not server-prefixed (they match globally). All other patterns are automatically prefixed with `<server_name>__`.
+
+### `tool_search` and BM25
+
+When `deferred_loading` is enabled, a built-in `tool_search` tool is registered. The LLM calls it with:
+
+- `"select:name1,name2"` — fetch exact tools by prefixed name
+- Free-text keywords — returns best matches ranked by **BM25** (Okapi BM25 with k1=1.2, b=0.75)
+
+BM25 uses TF-IDF weighting so rare terms (e.g. "quantum") rank higher than common terms (e.g. "tool"). Tool names are tokenized on whitespace, underscores, and hyphens.
+
+### Example
+
+```toml
+[mcp]
+enabled = true
+deferred_loading = true
+
+[[mcp.servers]]
+name = "muninn"
+command = "muninn"
+args = ["mcp"]
+eager_tools = ["*recall*", "*remember*"]
+
+[[mcp.servers]]
+name = "filesystem"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/docs"]
+eager_tools = []
+```
+
 ## `[pacing]`
 
 Pacing controls for slow/local LLM workloads (Ollama, llama.cpp, vLLM). All keys are optional; when absent, existing behavior is preserved.

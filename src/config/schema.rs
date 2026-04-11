@@ -961,6 +961,11 @@ pub struct McpServerConfig {
     /// Falls back to empty string if not set.
     #[serde(default)]
     pub notification_reply_target: String,
+    /// Tool names (or glob patterns) that should be loaded eagerly even when
+    /// `deferred_loading` is true. Useful for high-frequency tools like memory
+    /// or shell that the LLM needs on every turn without a tool_search roundtrip.
+    #[serde(default)]
+    pub eager_tools: Vec<String>,
 }
 
 /// External MCP client configuration (`[mcp]` section).

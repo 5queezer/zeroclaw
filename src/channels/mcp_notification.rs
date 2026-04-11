@@ -232,7 +232,14 @@ async fn run_sse_listener(
 
     let mut cur_data: Vec<String> = Vec::new();
 
-    while let Ok(Some(line)) = lines.next_line().await {
+    loop {
+        let line = match lines.next_line().await {
+            Ok(Some(line)) => line,
+            Ok(None) => break,
+            Err(e) => {
+                anyhow::bail!("SSE stream read error from `{server_name}`: {e}");
+            }
+        };
         let line = line.trim_end_matches('\r').to_string();
 
         if line.is_empty() {
