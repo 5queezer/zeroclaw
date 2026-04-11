@@ -116,6 +116,13 @@ impl Channel for TelegramUserChannel {
             ));
         }
 
+        // Ensure the session directory exists (first-run on a clean machine).
+        if let Some(parent) = std::path::Path::new(&self.session_file).parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to create session directory: {e}"))?;
+        }
+
         // Open or create session
         let session = Arc::new(
             SqliteSession::open(&self.session_file)
@@ -257,7 +264,7 @@ impl Channel for TelegramUserChannel {
             };
 
             let channel_msg = ChannelMessage {
-                id: format!("tgu_{}", message.id()),
+                id: format!("tgu_{}_{}", channel_username, message.id()),
                 sender: channel_username.clone(),
                 reply_target: self.reply_via_bot.clone(),
                 content,
