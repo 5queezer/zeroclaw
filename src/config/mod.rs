@@ -37,6 +37,10 @@ pub use schema::{
     ws_connect_with_proxy,
 };
 
+#[cfg(feature = "channel-telegram-user")]
+#[allow(unused_imports)]
+pub use schema::{TelegramUserConfig, TelegramUserWatchConfig};
+
 pub fn name_and_presence<T: traits::ChannelConfig>(channel: Option<&T>) -> (&'static str, bool) {
     (T::name(), channel.is_some())
 }

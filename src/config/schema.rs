@@ -6332,6 +6332,9 @@ pub struct ChannelsConfig {
     pub cli: bool,
     /// Telegram bot channel configuration.
     pub telegram: Option<TelegramConfig>,
+    /// Telegram user client channel (watches third-party channels via grammers).
+    #[cfg(feature = "channel-telegram-user")]
+    pub telegram_user: Option<TelegramUserConfig>,
     /// Discord bot channel configuration.
     pub discord: Option<DiscordConfig>,
     /// Discord history channel — logs ALL messages and forwards @mentions to agent.
@@ -6433,6 +6436,11 @@ impl ChannelsConfig {
             (
                 Box::new(ConfigWrapper::new(self.telegram.as_ref())),
                 self.telegram.is_some(),
+            ),
+            #[cfg(feature = "channel-telegram-user")]
+            (
+                Box::new(ConfigWrapper::new(self.telegram_user.as_ref())),
+                self.telegram_user.is_some(),
             ),
             (
                 Box::new(ConfigWrapper::new(self.discord.as_ref())),
@@ -6558,6 +6566,8 @@ impl Default for ChannelsConfig {
         Self {
             cli: true,
             telegram: None,
+            #[cfg(feature = "channel-telegram-user")]
+            telegram_user: None,
             discord: None,
             discord_history: None,
             slack: None,
@@ -6665,6 +6675,65 @@ impl ChannelConfig for TelegramConfig {
     }
     fn desc() -> &'static str {
         "connect your bot"
+    }
+}
+
+/// Telegram user client configuration (grammers-based).
+///
+/// Watches third-party Telegram channels as a regular user account and
+/// forwards signal messages into the agent loop. Responses are routed
+/// through the regular Telegram bot channel.
+#[cfg(feature = "channel-telegram-user")]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TelegramUserConfig {
+    /// Telegram API ID (from <https://my.telegram.org>).
+    pub api_id: i32,
+    /// Telegram API hash (from <https://my.telegram.org>).
+    pub api_hash: String,
+    /// Phone number for the user account (e.g. "+1 415 555 0132").
+    pub phone: String,
+    /// Path to the session file. Default: `~/.hrafn/telegram_user.session`.
+    #[serde(default = "default_telegram_user_session")]
+    pub session_file: String,
+    /// Channels to watch for incoming signals.
+    #[serde(default)]
+    pub watch: Vec<TelegramUserWatchConfig>,
+    /// Bot username to route responses through (e.g. "@my_hrafn_bot").
+    /// When set, `reply_target` on produced messages is set to this value
+    /// so the agent loop delivers responses via the Telegram bot channel.
+    pub reply_via_bot: Option<String>,
+}
+
+/// A single channel to watch via the Telegram user client.
+#[cfg(feature = "channel-telegram-user")]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TelegramUserWatchConfig {
+    /// Channel username to watch (without leading `@`).
+    pub channel: String,
+    /// Handler/prompt template name for messages from this channel.
+    #[serde(default = "default_telegram_user_handler")]
+    pub handler: String,
+}
+
+#[cfg(feature = "channel-telegram-user")]
+fn default_telegram_user_session() -> String {
+    "~/.hrafn/telegram_user.session".to_string()
+}
+
+#[cfg(feature = "channel-telegram-user")]
+fn default_telegram_user_handler() -> String {
+    "trading_signal".to_string()
+}
+
+#[cfg(feature = "channel-telegram-user")]
+impl ChannelConfig for TelegramUserConfig {
+    fn name() -> &'static str {
+        "Telegram User"
+    }
+    fn desc() -> &'static str {
+        "watch third-party channels via user client"
     }
 }
 
@@ -11840,6 +11909,8 @@ auto_save = true
                     ack_reactions: None,
                     proxy_url: None,
                 }),
+                #[cfg(feature = "channel-telegram-user")]
+                telegram_user: None,
                 discord: None,
                 discord_history: None,
                 slack: None,
@@ -12863,6 +12934,8 @@ allowed_users = ["@ops:matrix.org"]
         let c = ChannelsConfig {
             cli: true,
             telegram: None,
+            #[cfg(feature = "channel-telegram-user")]
+            telegram_user: None,
             discord: None,
             discord_history: None,
             slack: None,
@@ -13235,6 +13308,8 @@ channel_ids = ["C123", "D456"]
         let c = ChannelsConfig {
             cli: true,
             telegram: None,
+            #[cfg(feature = "channel-telegram-user")]
+            telegram_user: None,
             discord: None,
             discord_history: None,
             slack: None,

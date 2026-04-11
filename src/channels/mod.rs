@@ -53,6 +53,8 @@ pub mod slack;
 pub mod stall_watchdog;
 #[cfg(feature = "channel-telegram")]
 pub mod telegram;
+#[cfg(feature = "channel-telegram-user")]
+pub mod telegram_user;
 pub mod traits;
 pub mod transcription;
 pub mod tts;
@@ -101,6 +103,8 @@ pub use signal::SignalChannel;
 pub use slack::SlackChannel;
 #[cfg(feature = "channel-telegram")]
 pub use telegram::TelegramChannel;
+#[cfg(feature = "channel-telegram-user")]
+pub use telegram_user::TelegramUserChannel;
 pub use traits::{Channel, SendMessage};
 #[allow(unused_imports)]
 pub use tts::{TtsManager, TtsProvider};
@@ -4476,6 +4480,14 @@ fn collect_configured_channels(
             "Telegram channel is configured but this build was compiled without \
              the `channel-telegram` feature; skipping."
         );
+    }
+
+    #[cfg(feature = "channel-telegram-user")]
+    if let Some(ref tgu) = config.channels_config.telegram_user {
+        channels.push(ConfiguredChannel {
+            display_name: "Telegram User",
+            channel: Arc::new(TelegramUserChannel::new(tgu)),
+        });
     }
 
     #[cfg(feature = "channel-discord")]
