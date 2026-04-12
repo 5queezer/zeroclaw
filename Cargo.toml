@@ -212,6 +212,12 @@ opentelemetry-otlp = { version = "0.31", default-features = false, features = ["
 # Serial port for peripheral communication (STM32, etc.)
 tokio-serial = { version = "5", default-features = false, optional = true }
 
+# TUI interface (ratatui + crossterm + tui-textarea)
+# These are pure-Rust/termios crates that work on all Unix targets including Android.
+ratatui = { version = "0.29", optional = true, default-features = false, features = ["crossterm"] }
+crossterm = { version = "0.28", optional = true }
+tui-textarea = { version = "0.7", optional = true, default-features = false, features = ["crossterm"] }
+
 # USB device enumeration (hardware discovery) — only on platforms nusb supports
 # (Linux, macOS, Windows). Android/Termux uses target_os="android" and is excluded.
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))'.dependencies]
@@ -231,11 +237,6 @@ cpal = { version = "0.15", optional = true }
 
 # Terminal QR rendering for WhatsApp Web pairing flow.
 qrcode = { version = "0.14", optional = true }
-
-# TUI interface (ratatui + crossterm + tui-textarea)
-ratatui = { version = "0.29", optional = true, default-features = false, features = ["crossterm"] }
-crossterm = { version = "0.28", optional = true }
-tui-textarea = { version = "0.7", optional = true, default-features = false, features = ["crossterm"] }
 
 # WhatsApp Web client (wa-rs) — optional, enable with --features whatsapp-web
 # Uses wa-rs for Bot and Client, wa-rs-core for storage traits, custom rusqlite backend avoids Diesel conflict.
