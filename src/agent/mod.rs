@@ -21,5 +21,7 @@ mod tests;
 
 #[allow(unused_imports)]
 pub use agent::{Agent, AgentBuilder, TurnEvent};
+#[cfg(feature = "tui")]
+pub use loop_::run_tui;
 #[allow(unused_imports)]
 pub use loop_::{process_message, run};

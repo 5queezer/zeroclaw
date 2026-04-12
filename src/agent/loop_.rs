@@ -4933,6 +4933,286 @@ pub async fn process_message(
     .await
 }
 
+/// Run the agent in TUI mode.
+///
+/// Performs the same subsystem setup as [`run`] (observer, memory, tools, MCP,
+/// provider, system prompt) but instead of reading from stdin it receives user
+/// messages from `user_rx` and streams [`TurnEvent`]s back through `event_tx`.
+///
+/// The caller is responsible for bridging `TurnEvent`s to whatever display
+/// layer it uses (e.g. the Ratatui TUI).
+#[cfg(feature = "tui")]
+pub async fn run_tui(
+    config: Config,
+    mut user_rx: tokio::sync::mpsc::Receiver<String>,
+    event_tx: tokio::sync::mpsc::Sender<crate::agent::TurnEvent>,
+) -> Result<()> {
+    use crate::agent::agent::AgentBuilder;
+    use crate::agent::dispatcher::NativeToolDispatcher;
+
+    // ── Wire up agnostic subsystems ──────────────────────────────
+    let observer: Arc<dyn crate::observability::Observer> =
+        Arc::from(observability::create_observer(&config.observability));
+    let runtime: Arc<dyn crate::runtime::RuntimeAdapter> =
+        Arc::from(runtime::create_runtime(&config.runtime)?);
+    let security = Arc::new(SecurityPolicy::from_config(
+        &config.autonomy,
+        &config.workspace_dir,
+        config.security.enabled,
+    ));
+
+    // ── Memory ───────────────────────────────────────────────────
+    let mem: Arc<dyn Memory> = Arc::from(memory::create_memory_with_storage_and_routes(
+        &config.memory,
+        &config.embedding_routes,
+        Some(&config.storage.provider.config),
+        &config.workspace_dir,
+        config.api_key.as_deref(),
+    )?);
+    tracing::info!(backend = mem.name(), "TUI: Memory initialized");
+
+    // ── Tools ────────────────────────────────────────────────────
+    let (composio_key, composio_entity_id) = if config.composio.enabled {
+        (
+            config.composio.api_key.as_deref(),
+            Some(config.composio.entity_id.as_str()),
+        )
+    } else {
+        (None, None)
+    };
+    let (
+        mut tools_registry,
+        delegate_handle,
+        _reaction_handle,
+        _channel_map_handle,
+        _ask_user_handle,
+        _escalate_handle,
+    ) = tools::all_tools_with_runtime(
+        Arc::new(config.clone()),
+        &security,
+        runtime,
+        mem.clone(),
+        composio_key,
+        composio_entity_id,
+        &config.browser,
+        &config.http_request,
+        &config.web_fetch,
+        &config.workspace_dir,
+        &config.agents,
+        config.api_key.as_deref(),
+        &config,
+        None,
+    );
+
+    let peripheral_tools: Vec<Box<dyn Tool>> =
+        crate::peripherals::create_peripheral_tools(&config.peripherals).await?;
+    if !peripheral_tools.is_empty() {
+        tracing::info!(
+            count = peripheral_tools.len(),
+            "TUI: Peripheral tools added"
+        );
+        tools_registry.extend(peripheral_tools);
+    }
+
+    // ── Wire MCP tools (non-fatal) ──────────────────────────────
+    let mut activated_handle_tui: Option<
+        std::sync::Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>,
+    > = None;
+    if config.mcp.enabled && !config.mcp.servers.is_empty() {
+        tracing::info!(
+            "TUI: Initializing MCP client — {} server(s) configured",
+            config.mcp.servers.len()
+        );
+        match crate::tools::McpRegistry::connect_all(&config.mcp.servers).await {
+            Ok(registry) => {
+                let registry = std::sync::Arc::new(registry);
+                if config.mcp.deferred_loading {
+                    let server_patterns: Vec<(String, Vec<String>)> = config
+                        .mcp
+                        .servers
+                        .iter()
+                        .map(|s| (s.name.clone(), s.eager_tools.clone()))
+                        .collect();
+                    let eager_patterns =
+                        crate::tools::mcp_deferred::build_eager_patterns(&server_patterns);
+                    let all_names = registry.tool_names();
+                    let mut eagerly_loaded: Vec<String> = Vec::new();
+                    for name in &all_names {
+                        if !crate::tools::mcp_deferred::is_eager_match(name, &eager_patterns) {
+                            continue;
+                        }
+                        if let Some(def) = registry.get_tool_def(name).await {
+                            let wrapper: std::sync::Arc<dyn Tool> =
+                                std::sync::Arc::new(crate::tools::McpToolWrapper::new(
+                                    name.clone(),
+                                    def,
+                                    std::sync::Arc::clone(&registry),
+                                ));
+                            if let Some(ref handle) = delegate_handle {
+                                handle.write().push(std::sync::Arc::clone(&wrapper));
+                            }
+                            tools_registry.push(Box::new(crate::tools::ArcToolRef(wrapper)));
+                            eagerly_loaded.push(name.clone());
+                        }
+                    }
+                    let deferred_set = crate::tools::DeferredMcpToolSet::from_registry(
+                        std::sync::Arc::clone(&registry),
+                        &eagerly_loaded,
+                    )
+                    .await;
+                    let activated = std::sync::Arc::new(std::sync::Mutex::new(
+                        crate::tools::ActivatedToolSet::new(),
+                    ));
+                    activated_handle_tui = Some(std::sync::Arc::clone(&activated));
+                    tools_registry.push(Box::new(crate::tools::ToolSearchTool::new(
+                        deferred_set,
+                        activated,
+                    )));
+                } else {
+                    let names = registry.tool_names();
+                    let mut registered = 0usize;
+                    for name in names {
+                        if let Some(def) = registry.get_tool_def(&name).await {
+                            let wrapper: std::sync::Arc<dyn Tool> =
+                                std::sync::Arc::new(crate::tools::McpToolWrapper::new(
+                                    name,
+                                    def,
+                                    std::sync::Arc::clone(&registry),
+                                ));
+                            if let Some(ref handle) = delegate_handle {
+                                handle.write().push(std::sync::Arc::clone(&wrapper));
+                            }
+                            tools_registry.push(Box::new(crate::tools::ArcToolRef(wrapper)));
+                            registered += 1;
+                        }
+                    }
+                    tracing::info!(
+                        "TUI: MCP {} tool(s) registered from {} server(s)",
+                        registered,
+                        registry.server_count()
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::error!("TUI: MCP registry failed to initialize: {e:#}");
+            }
+        }
+    }
+
+    // ── Skills ───────────────────────────────────────────────────
+    let skills = crate::skills::load_skills_with_config(&config.workspace_dir, &config);
+    tools::register_skill_tools(&mut tools_registry, &skills, security.clone());
+
+    // ── Resolve provider ─────────────────────────────────────────
+    let model_name = config
+        .default_model
+        .as_deref()
+        .unwrap_or("anthropic/claude-sonnet-4")
+        .to_string();
+    let provider_name = config
+        .default_provider
+        .as_deref()
+        .unwrap_or("openrouter")
+        .to_string();
+    let provider_runtime_options = providers::provider_runtime_options_from_config(&config);
+    let provider: Box<dyn providers::Provider> = providers::create_routed_provider_with_options(
+        &provider_name,
+        config.api_key.as_deref(),
+        config.api_url.as_deref(),
+        &config.reliability,
+        &config.model_routes,
+        &model_name,
+        &provider_runtime_options,
+    )?;
+
+    let native_tools = provider.supports_native_tools();
+    let tool_dispatcher: Box<dyn crate::agent::dispatcher::ToolDispatcher> = if native_tools {
+        Box::new(NativeToolDispatcher)
+    } else {
+        Box::new(crate::agent::dispatcher::XmlToolDispatcher)
+    };
+
+    // ── Locale-aware tool descriptions ───────────────────────────
+    let i18n_locale = config
+        .locale
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(crate::i18n::detect_locale);
+    let i18n_search_dirs = crate::i18n::default_search_dirs(&config.workspace_dir);
+    let i18n_descs = crate::i18n::ToolDescriptions::load(&i18n_locale, &i18n_search_dirs);
+
+    observer.record_event(&crate::observability::ObserverEvent::AgentStart {
+        provider: provider_name.to_string(),
+        model: model_name.to_string(),
+    });
+
+    // ── Build Agent ──────────────────────────────────────────────
+    let temperature = config.default_temperature;
+    let mut agent = AgentBuilder::new()
+        .provider(provider)
+        .tools(tools_registry)
+        .memory(mem)
+        .observer(observer)
+        .tool_dispatcher(tool_dispatcher)
+        .config(config.agent.clone())
+        .model_name(model_name)
+        .temperature(temperature)
+        .workspace_dir(config.workspace_dir.clone())
+        .identity_config(config.identity.clone())
+        .skills(skills)
+        .skills_prompt_mode(config.skills.prompt_injection_mode)
+        .auto_save(config.memory.auto_save)
+        .tool_descriptions(Some(i18n_descs))
+        .autonomy_level(config.autonomy.level)
+        .activated_tools(activated_handle_tui)
+        .build()?;
+
+    tracing::info!("TUI: Agent ready, entering message loop");
+
+    // ── Message loop ─────────────────────────────────────────────
+    // NOTE: Cancel cannot interrupt an in-flight turn_streamed() call.
+    // A future improvement would accept a CancellationToken in turn_streamed.
+    loop {
+        match user_rx.recv().await {
+            Some(msg) if msg == "__CANCEL__" => {}
+            Some(msg) => {
+                if let Err(e) = agent.turn_streamed(&msg, event_tx.clone()).await {
+                    // Sanitize: only surface the error kind, not internal details.
+                    let safe_msg = if e.to_string().contains("API") {
+                        "provider API error".to_string()
+                    } else {
+                        "agent error".to_string()
+                    };
+                    if event_tx
+                        .send(crate::agent::TurnEvent::Chunk {
+                            delta: format!("\n[{safe_msg}]"),
+                        })
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                    tracing::error!("TUI turn error: {e:#}");
+                }
+                // End-of-turn marker so the bridge knows the turn finished.
+                if event_tx
+                    .send(crate::agent::TurnEvent::Chunk {
+                        delta: String::new(),
+                    })
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            None => break, // TUI closed
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
