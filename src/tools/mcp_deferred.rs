@@ -149,7 +149,7 @@ pub struct BM25Strategy {
 }
 
 impl BM25Strategy {
-    pub fn build(stubs: &[DeferredMcpToolStub]) -> Self {
+    pub(crate) fn build(stubs: &[DeferredMcpToolStub]) -> Self {
         Self {
             index: BM25Index::build(stubs),
         }
@@ -197,15 +197,23 @@ impl ToolSearchStrategy for BM25Strategy {
 
 // ── DeferredMcpToolStub ──────────────────────────────────────────────────
 
-/// Shorten a description to its first sentence (up to ". "), or truncate at
-/// 120 chars with "…", or pass through unchanged if short enough.
+/// Shorten a description to its first sentence (up to ". "), capped at 120
+/// chars. Falls back to the full text truncated at 120 chars with "…".
+/// Truncation is always on a UTF-8 character boundary.
 fn shorten(text: &str) -> String {
-    if let Some(pos) = text.find(". ") {
-        text[..=pos].to_string()
-    } else if text.len() > 120 {
-        format!("{}…", &text[..119])
+    let raw = if let Some(pos) = text.find(". ") {
+        &text[..=pos]
     } else {
-        text.to_string()
+        text
+    };
+    if raw.len() <= 120 {
+        raw.to_string()
+    } else {
+        let mut end = 119;
+        while end > 0 && !raw.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}…", &raw[..end])
     }
 }
 
@@ -494,9 +502,9 @@ impl Default for ActivatedToolSet {
 // ── System prompt helper ─────────────────────────────────────────────────
 
 /// Build the `<available-deferred-tools>` section for the system prompt.
-/// Lists only tool names so the LLM knows what is available without
-/// consuming context window on full schemas. Includes an instruction
-/// block that tells the LLM to call `tool_search` to activate them.
+/// Lists tool stubs (`name - stub_description`) so the LLM knows what is
+/// available without consuming context window on full schemas. Includes an
+/// instruction block that tells the LLM to call `tool_search` to activate them.
 pub fn build_deferred_tools_section(deferred: &DeferredMcpToolSet) -> String {
     if deferred.is_empty() {
         return String::new();

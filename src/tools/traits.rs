@@ -51,15 +51,23 @@ pub trait Tool: Send + Sync {
     /// Short description for tiered context injection.
     /// Used in system-prompt stubs where the full description would waste tokens.
     /// Default: first sentence of `description()` (up to the first ". "),
-    /// otherwise the full description truncated at 120 chars with "…".
+    /// capped at 120 chars. Falls back to the full description truncated at
+    /// 120 chars with "…". Truncation is always on a UTF-8 character boundary.
     fn stub_description(&self) -> String {
         let d = self.description();
-        if let Some(pos) = d.find(". ") {
-            d[..=pos].to_string()
-        } else if d.len() > 120 {
-            format!("{}…", &d[..119])
+        let raw = if let Some(pos) = d.find(". ") {
+            &d[..=pos]
         } else {
-            d.to_string()
+            d
+        };
+        if raw.len() <= 120 {
+            raw.to_string()
+        } else {
+            let mut end = 119;
+            while end > 0 && !raw.is_char_boundary(end) {
+                end -= 1;
+            }
+            format!("{}…", &raw[..end])
         }
     }
 
@@ -248,5 +256,66 @@ mod tests {
         let stub = tool.stub();
         assert_eq!(stub.name, "sentence_tool");
         assert_eq!(stub.stub_description, "First sentence.");
+    }
+
+    #[test]
+    fn stub_description_caps_long_first_sentence() {
+        // A description whose first sentence is > 120 bytes should still be capped.
+        struct LongSentenceTool;
+        #[async_trait]
+        impl Tool for LongSentenceTool {
+            fn name(&self) -> &str {
+                "t"
+            }
+            fn description(&self) -> &str {
+                // First sentence is 130+ chars, terminated by ". "
+                "This first sentence is deliberately very long so that it exceeds the 120-character limit that we enforce on stub descriptions. Second sentence."
+            }
+            fn parameters_schema(&self) -> serde_json::Value {
+                serde_json::json!({})
+            }
+            async fn execute(&self, _: serde_json::Value) -> anyhow::Result<ToolResult> {
+                Ok(ToolResult {
+                    success: true,
+                    output: String::new(),
+                    error: None,
+                })
+            }
+        }
+        let stub = LongSentenceTool.stub_description();
+        assert!(stub.ends_with('…'), "long first sentence must be truncated");
+        assert!(stub.len() <= 120 + '…'.len_utf8(), "must not exceed budget");
+    }
+
+    #[test]
+    fn stub_description_non_ascii_truncation_does_not_panic() {
+        // Description is all multi-byte characters (3 bytes each in UTF-8).
+        // Any byte-level slice at position 119 would land mid-character → panic
+        // without the char-boundary fix.
+        struct UnicodeTool;
+        #[async_trait]
+        impl Tool for UnicodeTool {
+            fn name(&self) -> &str {
+                "t"
+            }
+            fn description(&self) -> &str {
+                // "€" is 3 bytes; 45 repetitions = 135 bytes, > 120
+                "€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€"
+            }
+            fn parameters_schema(&self) -> serde_json::Value {
+                serde_json::json!({})
+            }
+            async fn execute(&self, _: serde_json::Value) -> anyhow::Result<ToolResult> {
+                Ok(ToolResult {
+                    success: true,
+                    output: String::new(),
+                    error: None,
+                })
+            }
+        }
+        let stub = UnicodeTool.stub_description();
+        // Must not panic, must end with ellipsis, must be valid UTF-8.
+        assert!(stub.ends_with('…'));
+        assert!(std::str::from_utf8(stub.as_bytes()).is_ok());
     }
 }
