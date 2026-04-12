@@ -17,6 +17,13 @@ pub struct ToolSpec {
     pub parameters: serde_json::Value,
 }
 
+/// Lightweight stub for tiered context injection — name + short description only.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolStub {
+    pub name: String,
+    pub stub_description: String,
+}
+
 /// Core tool trait — implement for any capability
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -38,6 +45,29 @@ pub trait Tool: Send + Sync {
             name: self.name().to_string(),
             description: self.description().to_string(),
             parameters: self.parameters_schema(),
+        }
+    }
+
+    /// Short description for tiered context injection.
+    /// Used in system-prompt stubs where the full description would waste tokens.
+    /// Default: first sentence of `description()` (up to the first ". "),
+    /// otherwise the full description truncated at 120 chars with "…".
+    fn stub_description(&self) -> String {
+        let d = self.description();
+        if let Some(pos) = d.find(". ") {
+            d[..=pos].to_string()
+        } else if d.len() > 120 {
+            format!("{}…", &d[..119])
+        } else {
+            d.to_string()
+        }
+    }
+
+    /// Get a lightweight stub (name + short description) for tiered context injection.
+    fn stub(&self) -> ToolStub {
+        ToolStub {
+            name: self.name().to_string(),
+            stub_description: self.stub_description(),
         }
     }
 }
@@ -117,5 +147,106 @@ mod tests {
 
         assert!(!parsed.success);
         assert_eq!(parsed.error.as_deref(), Some("boom"));
+    }
+
+    struct SentenceTool;
+
+    #[async_trait]
+    impl Tool for SentenceTool {
+        fn name(&self) -> &str {
+            "sentence_tool"
+        }
+        fn description(&self) -> &str {
+            "First sentence. Second sentence follows here."
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
+        async fn execute(&self, _args: serde_json::Value) -> anyhow::Result<ToolResult> {
+            Ok(ToolResult {
+                success: true,
+                output: String::new(),
+                error: None,
+            })
+        }
+    }
+
+    struct LongTool;
+
+    #[async_trait]
+    impl Tool for LongTool {
+        fn name(&self) -> &str {
+            "long_tool"
+        }
+        fn description(&self) -> &str {
+            // 130-char description with no ". " separator
+            "This description is deliberately long and has no sentence break so truncation at 120 chars with an ellipsis should happen here."
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
+        async fn execute(&self, _args: serde_json::Value) -> anyhow::Result<ToolResult> {
+            Ok(ToolResult {
+                success: true,
+                output: String::new(),
+                error: None,
+            })
+        }
+    }
+
+    struct ShortTool;
+
+    #[async_trait]
+    impl Tool for ShortTool {
+        fn name(&self) -> &str {
+            "short_tool"
+        }
+        fn description(&self) -> &str {
+            "Short desc"
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
+        async fn execute(&self, _args: serde_json::Value) -> anyhow::Result<ToolResult> {
+            Ok(ToolResult {
+                success: true,
+                output: String::new(),
+                error: None,
+            })
+        }
+    }
+
+    #[test]
+    fn stub_description_truncates_at_first_sentence() {
+        let tool = SentenceTool;
+        assert_eq!(tool.stub_description(), "First sentence.");
+    }
+
+    #[test]
+    fn stub_description_truncates_long_description_with_ellipsis() {
+        let tool = LongTool;
+        let desc = tool.description();
+        assert!(
+            desc.len() > 120,
+            "precondition: description must be > 120 chars"
+        );
+        let stub = tool.stub_description();
+        assert!(stub.ends_with('…'));
+        // The stub should be the first 119 chars + the ellipsis character (3 bytes in UTF-8)
+        assert_eq!(stub, format!("{}…", &desc[..119]));
+    }
+
+    #[test]
+    fn stub_description_passes_short_description_unchanged() {
+        let tool = ShortTool;
+        assert_eq!(tool.stub_description(), "Short desc");
+    }
+
+    #[test]
+    fn stub_returns_name_and_stub_description() {
+        let tool = SentenceTool;
+        let stub = tool.stub();
+        assert_eq!(stub.name, "sentence_tool");
+        assert_eq!(stub.stub_description, "First sentence.");
     }
 }
