@@ -128,6 +128,7 @@ pub struct App {
     pub(crate) palette_open: bool,
     pub(crate) palette_query: String,
     pub(crate) palette_items: Vec<PaletteItem>,
+    pub(crate) palette_selected: usize,
 
     // Spinner (agent thinking indicator)
     pub(crate) spinner: Option<SpinnerState>,
@@ -153,7 +154,21 @@ impl App {
             textarea: input::create_textarea(),
             palette_open: false,
             palette_query: String::new(),
-            palette_items: Vec::new(),
+            palette_items: vec![
+                PaletteItem {
+                    name: "/quit".into(),
+                    description: "Exit the TUI".into(),
+                },
+                PaletteItem {
+                    name: "/clear".into(),
+                    description: "Clear chat history".into(),
+                },
+                PaletteItem {
+                    name: "/help".into(),
+                    description: "Show help".into(),
+                },
+            ],
+            palette_selected: 0,
             spinner: None,
             should_quit: false,
             tick: 0,
@@ -164,12 +179,12 @@ impl App {
         let outer_chunks = if self.sidebar_visible {
             Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([Constraint::Min(40), Constraint::Length(30)])
+                .constraints([Constraint::Min(1), Constraint::Length(40)])
                 .split(frame.area())
         } else {
             Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([Constraint::Min(40)])
+                .constraints([Constraint::Min(1)])
                 .split(frame.area())
         };
 
@@ -180,7 +195,13 @@ impl App {
             .split(outer_chunks[0]);
 
         // Chat area
-        chat::render_chat_area(frame, main_chunks[0], &self.messages, self.scroll_offset);
+        chat::render_chat_area(
+            frame,
+            main_chunks[0],
+            &self.messages,
+            &self.pending_chunk,
+            self.scroll_offset,
+        );
 
         // Spinner line (only when agent is processing)
         if let Some(ref state) = self.spinner {
@@ -201,6 +222,7 @@ impl App {
                 &self.channel_status,
                 &self.memory_activity,
                 &self.peripheral_status,
+                self.tick,
             );
         }
 
@@ -211,6 +233,7 @@ impl App {
                 frame.area(),
                 &self.palette_query,
                 &self.palette_items,
+                self.palette_selected,
             );
         }
     }
@@ -354,17 +377,46 @@ fn handle_key_event(app: &mut App, tx: &mpsc::Sender<String>, key: KeyEvent) -> 
             KeyCode::Esc => {
                 app.palette_open = false;
                 app.palette_query.clear();
+                app.palette_selected = 0;
             }
             KeyCode::Char(c) => {
                 app.palette_query.push(c);
+                app.palette_selected = 0;
             }
             KeyCode::Backspace => {
                 app.palette_query.pop();
+                app.palette_selected = 0;
+            }
+            KeyCode::Up => {
+                app.palette_selected = app.palette_selected.saturating_sub(1);
+            }
+            KeyCode::Down => {
+                let filtered_len =
+                    command::filter_items(&app.palette_query, &app.palette_items).len();
+                if filtered_len > 0 {
+                    app.palette_selected =
+                        (app.palette_selected + 1).min(filtered_len.saturating_sub(1));
+                }
             }
             KeyCode::Enter => {
-                // Execute selected palette item (stub: just close)
-                app.palette_open = false;
-                app.palette_query.clear();
+                let filtered = command::filter_items(&app.palette_query, &app.palette_items);
+                if let Some(item) = filtered.get(app.palette_selected) {
+                    let name = item.name.clone();
+                    app.palette_open = false;
+                    app.palette_query.clear();
+                    app.palette_selected = 0;
+                    // Feed slash commands through handle_submit
+                    if name.starts_with('/') {
+                        app.textarea.select_all();
+                        app.textarea.cut();
+                        app.textarea.insert_str(&name);
+                        app.handle_submit(tx);
+                    }
+                } else {
+                    app.palette_open = false;
+                    app.palette_query.clear();
+                    app.palette_selected = 0;
+                }
             }
             _ => {}
         }

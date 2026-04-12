@@ -1,10 +1,12 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    text::Line,
-    widgets::{Block, Borders, Paragraph},
+    style::Style,
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
 
+use super::chat::Spinner;
 use super::theme;
 use super::{ActiveTool, AgentInfo, ChannelStatus, MemoryOp, PeripheralStatus};
 
@@ -17,17 +19,18 @@ pub(crate) fn render_sidebar(
     channel_status: &[ChannelStatus],
     memory_activity: &[MemoryOp],
     peripheral_status: &[PeripheralStatus],
+    tick: usize,
 ) {
     let block = Block::default()
         .title(" Status ")
-        .title_style(theme::bold())
+        .title_style(theme::sidebar_heading())
         .borders(Borders::ALL)
         .border_style(theme::border());
 
     let mut lines: Vec<Line> = Vec::new();
 
     // Agent section
-    lines.push(Line::from("Agent").style(theme::bold()));
+    lines.push(Line::from("Agent").style(theme::sidebar_heading()));
     lines.push(
         Line::from(format!("  {} / {}", agent_info.provider, agent_info.model))
             .style(theme::style()),
@@ -45,33 +48,43 @@ pub(crate) fn render_sidebar(
     lines.push(Line::from(""));
 
     // Active tools section
-    lines.push(Line::from("Tools").style(theme::bold()));
+    let spinner = Spinner::new();
+    lines.push(Line::from("Tools").style(theme::sidebar_heading()));
     if active_tools.is_empty() {
         lines.push(Line::from("  (idle)").style(theme::dim()));
     } else {
         for tool in active_tools {
             let elapsed = tool.started.elapsed().as_secs_f64();
-            lines.push(
-                Line::from(format!("  {} ({:.1}s)", tool.name, elapsed)).style(theme::style()),
-            );
+            let frame_char = spinner.frame(tick);
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {frame_char} "), theme::style()),
+                Span::styled(format!("{} ({:.1}s)", tool.name, elapsed), theme::style()),
+            ]));
         }
     }
     lines.push(Line::from(""));
 
     // Channels section
-    lines.push(Line::from("Channels").style(theme::bold()));
+    lines.push(Line::from("Channels").style(theme::sidebar_heading()));
     if channel_status.is_empty() {
         lines.push(Line::from("  (none)").style(theme::dim()));
     } else {
         for ch in channel_status {
-            let indicator = if ch.connected { "+" } else { "-" };
-            lines.push(Line::from(format!("  {indicator} {}", ch.name)).style(theme::style()));
+            let (indicator, color) = if ch.connected {
+                ("\u{25CF}", Style::new().fg(theme::PRIMARY))
+            } else {
+                ("\u{25CF}", Style::new().fg(theme::ERROR))
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {indicator} "), color),
+                Span::styled(ch.name.as_str(), theme::style()),
+            ]));
         }
     }
     lines.push(Line::from(""));
 
     // Memory section
-    lines.push(Line::from("Memory").style(theme::bold()));
+    lines.push(Line::from("Memory").style(theme::sidebar_heading()));
     if memory_activity.is_empty() {
         lines.push(Line::from("  (no activity)").style(theme::dim()));
     } else {
@@ -83,7 +96,7 @@ pub(crate) fn render_sidebar(
     lines.push(Line::from(""));
 
     // Peripherals section
-    lines.push(Line::from("Peripherals").style(theme::bold()));
+    lines.push(Line::from("Peripherals").style(theme::sidebar_heading()));
     if peripheral_status.is_empty() {
         lines.push(Line::from("  (none)").style(theme::dim()));
     } else {
@@ -92,6 +105,17 @@ pub(crate) fn render_sidebar(
         }
     }
 
-    let paragraph = Paragraph::new(lines).block(block);
+    // Inner height is area minus 2 for top/bottom borders
+    let inner_height = area.height.saturating_sub(2) as usize;
+    let scroll = if lines.len() > inner_height {
+        u16::try_from(lines.len() - inner_height).unwrap_or(u16::MAX)
+    } else {
+        0
+    };
+
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
     frame.render_widget(paragraph, area);
 }

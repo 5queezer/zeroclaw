@@ -14,6 +14,7 @@ pub(crate) fn render_command_palette(
     area: Rect,
     query: &str,
     items: &[PaletteItem],
+    selected: usize,
 ) {
     // Center a 60x16 box (or smaller if the terminal is small)
     let width = area.width.min(60);
@@ -33,22 +34,40 @@ pub(crate) fn render_command_palette(
         .title(" Command Palette ")
         .title_style(theme::bold())
         .borders(Borders::ALL)
-        .border_style(theme::border());
+        .border_style(theme::dim());
 
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(format!("> {query}_")).style(theme::style()));
     lines.push(Line::from(""));
 
     let filtered = filter_items(query, items);
-    for item in filtered.iter().take(height.saturating_sub(4) as usize) {
+    // Reserve 2 lines for query+blank at top and 1 line for hints at bottom
+    let max_visible = height.saturating_sub(5) as usize;
+    for (i, item) in filtered.iter().enumerate().take(max_visible) {
+        let style = if i == selected {
+            theme::bold()
+        } else {
+            theme::dim()
+        };
+        let marker = if i == selected { "> " } else { "  " };
         lines.push(
-            Line::from(format!("  {} — {}", item.name, item.description)).style(theme::dim()),
+            Line::from(format!(
+                "{marker}{} \u{2014} {}",
+                item.name, item.description
+            ))
+            .style(style),
         );
     }
 
     if filtered.is_empty() {
         lines.push(Line::from("  (no matches)").style(theme::dim()));
     }
+
+    // Keybinding hints at the bottom
+    lines.push(Line::from(""));
+    lines.push(
+        Line::from("\u{2191}\u{2193} navigate  \u{23CE} select  esc close").style(theme::dim()),
+    );
 
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, popup_area);

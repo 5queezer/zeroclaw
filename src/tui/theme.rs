@@ -2,9 +2,10 @@ use ratatui::style::{Color, Modifier, Style};
 
 pub const PRIMARY: Color = Color::Rgb(0, 255, 70);
 pub const BG: Color = Color::Reset;
-pub const ACCENT: Color = Color::Rgb(100, 200, 255);
+pub const ACCENT: Color = Color::Rgb(100, 180, 255);
 pub const WARN: Color = Color::Rgb(255, 200, 50);
 pub const ERROR: Color = Color::Rgb(255, 80, 80);
+pub const SYSTEM: Color = Color::Rgb(180, 180, 180);
 
 pub const fn style() -> Style {
     Style::new().fg(PRIMARY).bg(BG)
@@ -32,9 +33,14 @@ pub const fn tool_block() -> Style {
     Style::new().fg(ACCENT)
 }
 
-/// Style for system/warning messages.
+/// Dim style for tool block content.
+pub const fn tool_block_dim() -> Style {
+    Style::new().fg(ACCENT).add_modifier(Modifier::DIM)
+}
+
+/// Style for system messages.
 pub const fn system() -> Style {
-    Style::new().fg(WARN)
+    Style::new().fg(SYSTEM).add_modifier(Modifier::ITALIC)
 }
 
 /// Style for error messages.
