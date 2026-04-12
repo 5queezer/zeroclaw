@@ -7,6 +7,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
+use super::ChatMessage;
 use super::theme;
 
 const SPINNER_FRAMES: &[&str] = &["\u{25DC}", "\u{25DD}", "\u{25DE}", "\u{25DF}"];
@@ -45,10 +46,11 @@ impl SpinnerState {
     }
 }
 
-pub(crate) fn render_output_pane(
+/// Render the main chat area showing messages.
+pub(crate) fn render_chat_area(
     frame: &mut Frame,
     area: Rect,
-    output: &[String],
+    messages: &[ChatMessage],
     scroll_offset: u16,
 ) {
     let block = Block::default()
@@ -57,9 +59,30 @@ pub(crate) fn render_output_pane(
         .borders(Borders::ALL)
         .border_style(theme::border());
 
-    let lines: Vec<Line> = output
+    let lines: Vec<Line> = messages
         .iter()
-        .map(|s| Line::from(s.as_str()).style(theme::style()))
+        .map(|msg| {
+            let text = match msg {
+                ChatMessage::User { text } => format!("> {text}"),
+                ChatMessage::Assistant { text } | ChatMessage::System { text } => text.clone(),
+                ChatMessage::ToolCall {
+                    name, args, status, ..
+                } => {
+                    let status_str = match status {
+                        super::ToolStatus::Running(started) => {
+                            format!("running {:.1}s", started.elapsed().as_secs_f64())
+                        }
+                        super::ToolStatus::Done(d) => format!("done {:.1}s", d.as_secs_f64()),
+                        super::ToolStatus::Failed(e) => format!("failed: {e}"),
+                    };
+                    format!("[tool: {name}({args})] {status_str}")
+                }
+                ChatMessage::ToolResult { name, output } => {
+                    format!("[{name} result] {output}")
+                }
+            };
+            Line::from(text.as_str().to_owned()).style(theme::style())
+        })
         .collect();
 
     let paragraph = Paragraph::new(lines)
@@ -71,6 +94,7 @@ pub(crate) fn render_output_pane(
     frame.render_widget(paragraph, area);
 }
 
+/// Render the spinner status line (shown while agent is processing).
 pub(crate) fn render_spinner_line(
     frame: &mut Frame,
     area: Rect,
