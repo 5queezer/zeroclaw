@@ -181,7 +181,7 @@ pub struct OlasConfig {
 | Result delivery (on-chain + IPFS) | New responder module | `src/mech/responder.rs` |
 | Mech tool packages | Existing `Tool` trait impls | `src/tools/traits.rs` |
 
-#### New modules
+#### Mech modules
 
 | File | Purpose |
 |---|---|
@@ -206,7 +206,7 @@ Use pinning service HTTP API (Pinata/web3.storage) -- no new dependencies needed
 **Risk tier:** High (on-chain financial operations)
 **Feature flag:** Reuses `olas`
 
-#### New modules
+#### Staking modules
 
 | File | Purpose |
 |---|---|
