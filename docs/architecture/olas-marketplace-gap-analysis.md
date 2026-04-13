@@ -13,7 +13,7 @@ This document identifies the gaps and proposes a phased integration strategy usi
 | **Open Autonomy** | Rewrite as Python FSM app with Tendermint ABCI consensus | Not feasible for Hrafn |
 | **Olas SDK Wrapper** | Package existing agent as Docker image with Olas config files | **Recommended** |
 
-The Olas SDK wrapper approach (`olas-sdk-starter`) allows any agent framework to register on the marketplace by providing standardized configuration (`aea-config.yaml`, `service.yaml`) and a Docker image. Hrafn runs as a **sovereign agent** (single-operator) initially, with optional upgrade to decentralized (multi-operator) mode later.
+The Olas SDK wrapper approach ([olas-sdk-starter](https://github.com/valory-xyz/olas-sdk-starter)) allows any agent framework to register on the marketplace by providing standardized configuration (`aea-config.yaml`, `service.yaml`) and a Docker image. Hrafn runs as a **sovereign agent** (single-operator) initially, with optional upgrade to decentralized (multi-operator) mode later.
 
 ---
 
@@ -96,7 +96,7 @@ The Olas SDK wrapper approach (`olas-sdk-starter`) allows any agent framework to
 3. **`olas/service.yaml`** -- Service definition for marketplace registration
    - Agent reference: `5queezer/hrafn:0.1.0:<ipfs_hash>`
    - Number of agents: 1 (sovereign mode)
-   - Docker image reference with `oar-` prefix naming convention
+   - Docker image reference with `oar-` prefix naming convention (Olas Agent Runtime convention: namespace = author, image = `oar-<blueprint>`, tag = package hash)
 
 4. **`olas/docker-compose-olas.yml`** -- Compose file for Olas deployment
 
@@ -124,7 +124,7 @@ autonomy push-all               # push to IPFS registry
 Use `alloy` (not deprecated `ethers-rs`): modular, fine-grained feature flags, active development.
 
 ```toml
-alloy = { version = "1", optional = true, default-features = false, features = [
+alloy = { version = "1.8", optional = true, default-features = false, features = [
     "signer-local", "provider-http", "contract", "network", "sol-types",
 ] }
 ```
@@ -135,10 +135,11 @@ alloy = { version = "1", optional = true, default-features = false, features = [
 |---|---|
 | `src/wallet/mod.rs` | Module root, gated by `#[cfg(feature = "olas")]` |
 | `src/wallet/traits.rs` | `Wallet` trait: `address()`, `sign_message()`, `sign_transaction()`, `balance()` |
-| `src/wallet/keystore.rs` | Encrypted EVM key storage, reusing `SecretStore` (ChaCha20-Poly1305) |
+| `src/wallet/keystore.rs` | Encrypted EVM key storage, reusing `SecretStore` (ChaCha20-Poly1305). V1 uses raw private key; HD wallet / BIP-39 mnemonic support deferred to v2. |
 | `src/wallet/signer.rs` | Wrapper around `alloy::signers::local::PrivateKeySigner` |
 | `src/wallet/provider.rs` | JSON-RPC provider config (RPC URL, chain ID) for Gnosis and Ethereum |
 | `src/wallet/safe.rs` | Safe transaction service API (1-of-1 multisig for sovereign agents) |
+| `src/wallet/tx_manager.rs` | Nonce sequencing, EIP-1559 gas estimation, retry/resubmission for dropped transactions |
 | `src/tools/evm_wallet.rs` | `Tool` impl: `balance`, `sign_message`, `send_transaction`, `call_contract` |
 
 #### Existing files to modify
@@ -161,7 +162,26 @@ pub struct OlasConfig {
     pub staking: OlasStakingConfig,
     pub mech: OlasMechConfig,
 }
+
+pub struct OlasMechConfig {
+    pub enabled: bool,                    // default: false
+    pub contract_address: Option<String>, // Mech marketplace contract (Gnosis: 0x735F...0bB)
+    pub max_pending_requests: u32,        // default: 10
+    pub result_timeout_secs: u64,         // default: 300
+    pub ipfs_pinning_url: Option<String>, // Pinata/Storacha endpoint
+    pub ipfs_api_key: Option<String>,     // Pinning service API key
+}
+
+pub struct OlasStakingConfig {
+    pub enabled: bool,                    // default: false
+    pub service_registry: Option<String>, // Service Registry contract address
+    pub staking_contract: Option<String>, // Staking contract address
+    pub checkpoint_cron: Option<String>,  // default: "0 */4 * * *"
+    pub auto_claim_rewards: bool,         // default: false
+}
 ```
+
+Note: The checkpoint cron interval should be derived from the staking contract's `livenessRatio * epochLength` parameters, not hardcoded. The `"0 */4 * * *"` default is a conservative starting point; operators must verify against their chosen staking program.
 
 ---
 
@@ -187,7 +207,7 @@ pub struct OlasConfig {
 |---|---|
 | `src/mech/mod.rs` | Module root, gated by `#[cfg(feature = "olas")]` |
 | `src/mech/types.rs` | `MechRequest`, `MechResponse`, `MechTaskStatus` |
-| `src/mech/contracts.rs` | ABI bindings via `alloy::sol!` for Mech marketplace |
+| `src/mech/contracts.rs` | ABI bindings via `alloy::sol!` for Mech marketplace (Gnosis: `0x735FAAb1c4Ec41128c367AFb5c3baC73509f70bB`) |
 | `src/mech/listener.rs` | Poll/subscribe to on-chain events for incoming requests |
 | `src/mech/executor.rs` | Map Mech request to scoped agent execution |
 | `src/mech/responder.rs` | Hash result, upload to IPFS, submit delivery transaction |
@@ -196,7 +216,7 @@ pub struct OlasConfig {
 
 #### IPFS strategy
 
-Use pinning service HTTP API (Pinata/web3.storage) -- no new dependencies needed beyond `reqwest`.
+Use pinning service HTTP API (**Pinata** or **Storacha**, the successor to web3.storage which was sunset Jan 2024) -- no new dependencies needed beyond `reqwest`.
 
 ---
 
@@ -219,12 +239,12 @@ Use pinning service HTTP API (Pinata/web3.storage) -- no new dependencies needed
 
 #### Cron integration
 
-PoAA checkpoints map naturally to Hrafn's existing cron system:
+PoAA checkpoints map naturally to Hrafn's existing cron system. The interval should be derived from the staking contract's `livenessRatio * epochLength` and must be shorter than `maxAllowedInactivity` to avoid eviction:
 
 ```toml
 [[cron.jobs]]
 name = "olas_checkpoint"
-expression = "0 */4 * * *"  # Every 4 hours (configurable)
+expression = "0 */4 * * *"  # Conservative default; adjust per staking program
 ```
 
 ---
@@ -241,7 +261,8 @@ If pursued later, the **sidecar Tendermint** approach (Docker sidecar communicat
 ## Cross-Cutting Concerns
 
 - **Binary size:** `alloy` with minimal features adds ~2-4 MB behind feature flag. Not in `default`.
-- **Security:** EVM keys encrypted at rest via `SecretStore`. Transactions gated by `SecurityPolicy` autonomy level.
+- **Security:** EVM keys encrypted at rest via `SecretStore`. Transactions gated by `SecurityPolicy` autonomy level. V1 uses raw private key; HD wallet (BIP-39/BIP-44) and key rotation deferred to v2.
+- **Transaction management:** A dedicated `src/wallet/tx_manager.rs` module handles nonce sequencing (critical when Mech responses and staking checkpoints fire concurrently), EIP-1559 gas estimation with fee caps, and automatic retry/resubmission of dropped transactions with nonce bumping.
 - **Observability:** Prometheus counters + OTel spans for Mech requests, staking checkpoints, transaction lifecycle.
 - **Config migration:** All new sections use `#[serde(default)]` with `enabled: false`. Zero impact on existing deployments.
 - **PR discipline:** One concern per PR, conventional commits, size S/M.
@@ -262,3 +283,4 @@ If pursued later, the **sidecar Tendermint** approach (Docker sidecar communicat
 | 9 | `feat(olas): SopTrigger::OnChain variant + mech_tool` | Medium |
 | 10 | `feat(olas): staking module + checkpoint cron` | High |
 | 11 | `feat(olas): staking_tool` | High |
+| 12 | `chore(ci): add olas to ci-all feature flag` | Low |
