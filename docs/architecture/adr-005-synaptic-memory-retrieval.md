@@ -25,8 +25,10 @@ co-occurrence patterns across sessions.
 
 SynapticRAG demonstrates that combining temporal association with
 biologically-inspired activation thresholds yields up to 14.66%
-improvement on conversational memory retrieval benchmarks (SMRCs,
-PerLTQA) over standard vector-similarity RAG.
+improvement on conversational memory retrieval benchmarks — tested
+across four datasets in English, Chinese, and Japanese (SMRCs-EN,
+SMRCs-JA, PerLTQA-EN, PerLTQA-CN) — over standard vector-similarity
+RAG.
 
 ## Decision Drivers
 
@@ -62,28 +64,68 @@ CREATE INDEX idx_access_log_memory
     ON memory_access_log(memory_id);
 ```
 
+**Prerequisite fix:** `RetrievalPipeline::cache_key()` currently
+omits the `since`/`until` parameters, so two calls with the same
+query but different time ranges share a cache entry. This must be
+fixed before Phase 1, since temporal scoring makes time-range
+queries more likely. Add `since` and `until` to the cache key
+format string.
+
 **Risk:** Low. Additive schema change, no existing behavior modified.
 
 ### 2. Temporal Association Scoring
 
-Augment `hybrid_merge` in `src/memory/vector.rs` with a temporal
-association signal. Given two candidate memories A and B, compute
-how often they were accessed near each other in time using a
-simplified DTW-inspired alignment:
+Phase 2 adds a **query-relative** temporal signal. For each
+candidate memory C, compute how closely C's access spike train
+aligns with the spike train of the current query context (the
+memories most recently stored or recalled in this session):
 
 ```text
-T_score(A, B) = sigmoid(
-    alignment_score(spike_train_A, spike_train_B)
+T_score(query_ctx, C) = sigmoid(
+    alignment_score(spike_train_query, spike_train_C)
 )
 ```
 
-The combined propagation score becomes:
+This produces one temporal score per candidate, fitting naturally
+into `hybrid_merge` as a third input list alongside vector and
+keyword results.
+
+The separate **pairwise** formula used in Phase 3 (graph
+propagation) is distinct:
 
 ```text
 P_score(A, B) = T_score(A, B) * cosine_similarity(A, B)
 ```
 
-Integrate into hybrid merge as a third weighted signal:
+Phase 3 uses `P_score` as edge weights for stimulus propagation
+between knowledge graph nodes.
+
+#### `hybrid_merge` API change
+
+The current signature accepts `vector_results` and
+`keyword_results`. Phase 2 adds a third parameter:
+
+```rust
+pub fn hybrid_merge(
+    vector_results: &[(String, f32)],
+    keyword_results: &[(String, f32)],
+    temporal_results: &[(String, f32)],  // new
+    vector_weight: f32,
+    keyword_weight: f32,
+    temporal_weight: f32,                // new
+    limit: usize,
+) -> Vec<ScoredResult>
+```
+
+All existing call sites (in `sqlite.rs`, `muninndb.rs`, and
+`backend.rs`) must be updated. When `temporal_weight = 0.0`,
+callers pass an empty slice for `temporal_results`.
+
+A configurable `temporal_candidate_cap` (default: 20) limits the
+candidate set size before temporal scoring runs, bounding the
+O(n^2) DTW alignment cost.
+
+#### Scoring formula
 
 ```text
 final = w_vec * vector
@@ -91,22 +133,29 @@ final = w_vec * vector
       + w_temp * temporal_association
 ```
 
-Default weights: `w_vec = 0.5`, `w_kw = 0.3`, `w_temp = 0.2`.
-Configurable via `[memory]` settings. When `w_temp` is set to
-`0.0`, the `[memory]` settings handler renormalizes the remaining
-weights to preserve their relative proportion:
+#### Weight defaults and migration
+
+The current defaults are `w_vec = 0.5`, `w_kw = 0.3` (sum 0.8).
+Phase 2 introduces `w_temp = 0.2` (new sum 1.0). This changes
+the effective scale of existing scores.
+
+**Migration path:** Existing `[memory]` configs that set custom
+`vector_weight` / `keyword_weight` values will have
+`temporal_weight` default to `0.0` (opt-in), so their scoring
+is unchanged. When a user explicitly enables `temporal_weight`,
+the `[memory]` settings handler renormalizes all three weights
+to sum to 1.0:
 
 ```text
-w_vec' = w_vec / (w_vec + w_kw)
-w_kw'  = w_kw  / (w_vec + w_kw)
+w_i' = w_i / (w_vec + w_kw + w_temp)
 ```
 
-If both `w_vec` and `w_kw` are also zero, the system falls back to
-hard-coded defaults (`w_vec = 0.5`, `w_kw = 0.3`). This guarantees
-no behavioral change when disabling temporal scoring.
+If all weights are zero, the system falls back to hard-coded
+defaults (`w_vec = 0.625`, `w_kw = 0.375`). This guarantees no
+behavioral change for existing configurations.
 
-**Risk:** Medium. Changes retrieval scoring, but gated behind a
-weight that defaults conservatively and can be zeroed.
+**Risk:** Medium. Changes retrieval scoring, but `w_temp`
+defaults to `0.0` for existing configs and can be zeroed.
 
 ### 3. Stimulus Propagation on the Knowledge Graph
 
@@ -122,6 +171,39 @@ paths are included in the result set, even if they would not have
 been retrieved by direct similarity alone. This gives the knowledge
 graph a retrieval-time role.
 
+#### KnowledgeNode-to-MemoryEntry bridge
+
+`KnowledgeNode` and `MemoryEntry` are separate data structures
+with independent UUIDs. Phase 3 requires an explicit link between
+them so that stimulus propagation on the knowledge graph can
+influence memory recall scores.
+
+A new join table bridges the two:
+
+```sql
+CREATE TABLE memory_kg_links (
+    memory_id  TEXT NOT NULL,
+    kg_node_id TEXT NOT NULL,
+    PRIMARY KEY (memory_id, kg_node_id),
+    FOREIGN KEY (memory_id)
+        REFERENCES memories(id) ON DELETE CASCADE,
+    FOREIGN KEY (kg_node_id)
+        REFERENCES nodes(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_kg_links_node
+    ON memory_kg_links(kg_node_id);
+```
+
+Links are populated during memory consolidation
+(`consolidation.rs`): when a Core memory update is stored, the
+consolidation engine queries the knowledge graph for matching
+nodes (by FTS similarity on the memory content) and inserts
+links for any matches above a configurable threshold. Links can
+also be created explicitly via the `memory_store` tool when
+a `kg_node_id` is provided.
+
+#### Edge-weighted propagation
+
 Propagation respects existing edge semantics:
 
 - `Extends` / `Uses`: full propagation weight.
@@ -133,7 +215,8 @@ A configurable `stim_threshold` (default: 0.037, per the paper's
 optimized value) gates which nodes qualify for propagation.
 
 **Risk:** Medium-High. Introduces a new retrieval path through the
-knowledge graph. Should be feature-gated and opt-in initially.
+knowledge graph and a new schema dependency between the memory
+and KG tables. Should be feature-gated and opt-in initially.
 
 ### 4. Leaky Integrate-and-Fire Memory Selection
 
@@ -219,8 +302,8 @@ parameters, fitting Hrafn's no-heavy-dependencies principle.
 - Access logging adds write amplification to every store/recall
   operation.
 - Temporal scoring adds O(n^2) pairwise computation on candidate
-  sets (mitigated by the candidate pre-filter from FTS/vector
-  stages).
+  sets, bounded by `temporal_candidate_cap` (default 20, so at
+  most ~400 alignments per query).
 - Graph propagation adds latency proportional to graph density.
 - Four-phase rollout means the full benefit is not realized until
   all phases land.
