@@ -1170,6 +1170,10 @@ async fn handle_tasks_list(
         })
         .collect();
 
+    // v1.0 ListTasksResponse.total_size: count of tasks matching query filters
+    // (contextId/status/statusTimestampAfter), before page_token/page_size pagination.
+    let total_size = filtered.len();
+
     // Apply cursor: skip tasks up to and including page_token
     let after_cursor: Vec<&Task> = if let Some(ref token) = page_token {
         let mut found = false;
@@ -1222,6 +1226,7 @@ async fn handle_tasks_list(
     let mut result = json!({
         "tasks": result_tasks,
         "pageSize": page_size,
+        "totalSize": total_size,
     });
     if let Some(token) = next_page_token {
         result["nextPageToken"] = json!(token);
@@ -3276,7 +3281,34 @@ mod tests {
         let result = &body["result"];
         assert_eq!(result["tasks"].as_array().unwrap().len(), 0);
         assert_eq!(result["pageSize"], 50);
+        assert_eq!(result["totalSize"], 0);
         assert!(result.get("nextPageToken").is_none() || result["nextPageToken"].is_null());
+    }
+
+    #[tokio::test]
+    async fn tasks_list_reports_total_size_across_pagination() {
+        let store = Arc::new(TaskStore::new());
+        {
+            let mut tasks = store.tasks.write().await;
+            for i in 0..7 {
+                let id = format!("t-{i:02}");
+                tasks.insert(id.clone(), make_task(&id, A2aTaskState::Completed, None));
+            }
+        }
+
+        // With pageSize=2, first page should still report totalSize=7.
+        let req = list_rpc(json!({"pageSize": 2}));
+        let (_, Json(body)) = handle_tasks_list(&store, req).await;
+        let result = &body["result"];
+        assert_eq!(result["tasks"].as_array().unwrap().len(), 2);
+        assert_eq!(result["totalSize"], 7);
+
+        // totalSize reflects post-filter cardinality (before pagination).
+        let req = list_rpc(json!({"status": "TASK_STATE_FAILED"}));
+        let (_, Json(body)) = handle_tasks_list(&store, req).await;
+        let result = &body["result"];
+        assert_eq!(result["tasks"].as_array().unwrap().len(), 0);
+        assert_eq!(result["totalSize"], 0);
     }
 
     #[tokio::test]
