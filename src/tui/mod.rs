@@ -114,7 +114,7 @@ pub struct App {
 }
 
 impl App {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             messages: Vec::new(),
             scroll_offset: 0,
@@ -287,10 +287,13 @@ impl App {
 /// Spawn the TUI event loop on a tokio blocking task.
 ///
 /// - `tx`: channel for sending user input (and cancel signals) to the agent.
-/// - `rx`: channel for receiving agent output lines.
+/// - `rx`: channel for receiving `TurnEvent`s from the agent.
 ///
 /// Returns a `JoinHandle` that resolves when the TUI exits.
-pub fn spawn_tui(tx: mpsc::Sender<String>, mut rx: mpsc::Receiver<String>) -> JoinHandle<()> {
+pub fn spawn_tui(
+    tx: mpsc::Sender<String>,
+    mut rx: mpsc::Receiver<crate::agent::TurnEvent>,
+) -> JoinHandle<()> {
     tokio::task::spawn_blocking(move || {
         if let Err(e) = run_tui(tx, &mut rx) {
             eprintln!("TUI error: {e}");
@@ -308,7 +311,10 @@ impl Drop for TerminalGuard {
     }
 }
 
-fn run_tui(tx: mpsc::Sender<String>, rx: &mut mpsc::Receiver<String>) -> io::Result<()> {
+fn run_tui(
+    tx: mpsc::Sender<String>,
+    rx: &mut mpsc::Receiver<crate::agent::TurnEvent>,
+) -> io::Result<()> {
     terminal::enable_raw_mode()?;
     let _guard = TerminalGuard; // ensures raw mode + alt screen are restored even on panic
     io::stdout().execute(EnterAlternateScreen)?;
@@ -330,36 +336,9 @@ fn run_tui(tx: mpsc::Sender<String>, rx: &mut mpsc::Receiver<String>) -> io::Res
             }
         }
 
-        // Drain incoming agent output (non-blocking).
-        // The bridge tags tool events as "[tool:NAME]" / "[result:NAME]".
-        while let Ok(line) = rx.try_recv() {
-            app.spinner = None;
-            if let Some(rest) = line.strip_prefix("[tool:") {
-                if let Some((name, args)) = rest.split_once("]\n") {
-                    app.messages.push(ChatMessage::ToolCall {
-                        name: name.to_string(),
-                        args: args.to_string(),
-                        status: ToolStatus::Done(std::time::Duration::ZERO),
-                    });
-                    if app.auto_scroll {
-                        app.scroll_offset = u16::MAX;
-                    }
-                    continue;
-                }
-            }
-            if let Some(rest) = line.strip_prefix("[result:") {
-                if let Some((name, output)) = rest.split_once("]\n") {
-                    app.messages.push(ChatMessage::ToolResult {
-                        name: name.to_string(),
-                        output: output.to_string(),
-                    });
-                    if app.auto_scroll {
-                        app.scroll_offset = u16::MAX;
-                    }
-                    continue;
-                }
-            }
-            app.push_assistant(line);
+        // Drain incoming agent events (non-blocking).
+        while let Ok(event) = rx.try_recv() {
+            crate::tui::events::handle_turn_event(&mut app, event);
         }
 
         app.tick = app.tick.wrapping_add(1);
