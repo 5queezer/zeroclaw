@@ -1772,6 +1772,7 @@ pub async fn handle_message_stream_rest(
                                 .data(serde_json::to_string(&ev).unwrap_or_default())
                         );
                     }
+                    TurnEvent::TurnEnd => {}
                 }
             }
 

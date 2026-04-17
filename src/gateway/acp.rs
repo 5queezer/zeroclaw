@@ -1076,6 +1076,7 @@ async fn execute_agent_streamed(
     let forwarder = tokio::spawn(async move {
         while let Some(turn_event) = event_rx.recv().await {
             let part = match turn_event {
+                TurnEvent::TurnEnd => continue,
                 TurnEvent::Chunk { delta } => MessagePart {
                     name: None,
                     content_type: "text/plain".into(),

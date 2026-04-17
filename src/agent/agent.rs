@@ -35,6 +35,10 @@ pub enum TurnEvent {
     },
     /// A tool has returned a result.
     ToolResult { name: String, output: String },
+    /// Emitted once at the very end of a streamed turn, before the channel closes.
+    /// Downstream consumers can use this as an explicit "turn done" signal instead
+    /// of relying on the channel-close side effect.
+    TurnEnd,
 }
 
 pub struct Agent {
@@ -981,6 +985,17 @@ impl Agent {
         &mut self,
         user_message: &str,
         event_tx: tokio::sync::mpsc::Sender<TurnEvent>,
+    ) -> Result<String> {
+        let result = self.turn_streamed_inner(user_message, &event_tx).await;
+        // Always emit TurnEnd, even on error paths. Best-effort; ignore send failures.
+        let _ = event_tx.send(TurnEvent::TurnEnd).await;
+        result
+    }
+
+    async fn turn_streamed_inner(
+        &mut self,
+        user_message: &str,
+        event_tx: &tokio::sync::mpsc::Sender<TurnEvent>,
     ) -> Result<String> {
         // ── Preamble (identical to turn) ───────────────────────────────
         if self.history.is_empty() {
@@ -1958,6 +1973,58 @@ mod tests {
         assert!(
             has_tool_result,
             "Should have emitted a ToolResult event for 'echo'"
+        );
+    }
+
+    #[tokio::test]
+    async fn turn_streamed_emits_turn_end_last() {
+        let provider = Box::new(StreamToolCaptureProvider {
+            tools_received: Arc::new(Mutex::new(Vec::new())),
+            call_count: Arc::new(Mutex::new(0)),
+        });
+
+        let memory_cfg = crate::config::MemoryConfig {
+            backend: "none".into(),
+            ..crate::config::MemoryConfig::default()
+        };
+        let mem: Arc<dyn Memory> = Arc::from(
+            crate::memory::create_memory(&memory_cfg, std::path::Path::new("/tmp"), None)
+                .expect("memory creation should succeed with valid config"),
+        );
+
+        let observer: Arc<dyn Observer> = Arc::from(crate::observability::NoopObserver {});
+        let mut agent = Agent::builder()
+            .provider(provider)
+            .tools(vec![Box::new(MockTool)])
+            .memory(mem)
+            .observer(observer)
+            .tool_dispatcher(Box::new(NativeToolDispatcher))
+            .workspace_dir(std::path::PathBuf::from("/tmp"))
+            .build()
+            .expect("agent builder should succeed with valid config");
+
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<TurnEvent>(64);
+        let response = agent
+            .turn_streamed("use the echo tool", event_tx)
+            .await
+            .unwrap();
+        assert_eq!(response, "stream-done");
+
+        // Drain all events; the channel closes when turn_streamed returns and
+        // drops the sender, so this loop terminates.
+        let mut events: Vec<TurnEvent> = Vec::new();
+        while let Some(ev) = event_rx.recv().await {
+            events.push(ev);
+        }
+
+        assert!(
+            events.iter().any(|e| matches!(e, TurnEvent::TurnEnd)),
+            "must see TurnEnd in event stream"
+        );
+        assert!(
+            matches!(events.last(), Some(TurnEvent::TurnEnd)),
+            "TurnEnd must be the final event, got: {:?}",
+            events.last()
         );
     }
 

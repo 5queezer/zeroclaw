@@ -104,7 +104,7 @@ async fn run_interactive_tui() -> Result<()> {
             let msg = match event {
                 TurnEvent::Chunk { delta } if delta.is_empty() => continue,
                 TurnEvent::Chunk { delta } => delta,
-                TurnEvent::Thinking { .. } => continue,
+                TurnEvent::Thinking { .. } | TurnEvent::TurnEnd => continue,
                 TurnEvent::ToolCall { name, args } => {
                     let args_str =
                         serde_json::to_string_pretty(&args).unwrap_or_else(|_| args.to_string());
