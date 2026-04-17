@@ -373,14 +373,15 @@ pub struct TaskStatusUpdateEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_id: Option<String>,
     pub status: TaskStatus,
-    #[serde(rename = "final")]
-    pub is_final: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
 }
 
 /// A2A v1.0 `TaskArtifactUpdateEvent` — emitted during streaming to deliver
 /// artifact content (potentially chunked).
+///
+/// `append` and `last_chunk` are top-level fields per the v1.0 proto
+/// (`TaskArtifactUpdateEvent.append` / `.last_chunk`), not artifact metadata.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskArtifactUpdateEvent {
@@ -388,6 +389,10 @@ pub struct TaskArtifactUpdateEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_id: Option<String>,
     pub artifact: Artifact,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub append: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub last_chunk: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
 }
@@ -1611,7 +1616,6 @@ pub async fn handle_message_stream_rest(
                     message: None,
                     timestamp: Some(chrono::Utc::now().to_rfc3339()),
                 },
-                is_final: false,
                 metadata: None,
             };
             emit!(
@@ -1652,7 +1656,6 @@ pub async fn handle_message_stream_rest(
                         task_id: tid.clone(),
                         context_id: Some(ctx.clone()),
                         status: fail_status.clone(),
-                        is_final: true,
                         metadata: None,
                     };
                     emit!(
@@ -1693,6 +1696,10 @@ pub async fn handle_message_stream_rest(
                         acc_clone.write().await.push_str(&delta);
                         chunk_index += 1;
 
+                        // Per A2A v1.0: `append` is a top-level event field.
+                        // First chunk: append=false (replaces any prior artifact state);
+                        // subsequent chunks: append=true. `last_chunk` is emitted with
+                        // the terminal artifact event after streaming completes.
                         let artifact_event = TaskArtifactUpdateEvent {
                             task_id: tid.clone(),
                             context_id: Some(ctx.clone()),
@@ -1704,12 +1711,11 @@ pub async fn handle_message_stream_rest(
                                     text: delta,
                                     metadata: None,
                                 }],
-                                metadata: Some(json!({
-                                    "append": true,
-                                    "chunkIndex": chunk_index,
-                                })),
+                                metadata: Some(json!({"chunkIndex": chunk_index})),
                                 extensions: None,
                             },
+                            append: chunk_index > 1,
+                            last_chunk: false,
                             metadata: None,
                         };
                         emit!(
@@ -1727,7 +1733,6 @@ pub async fn handle_message_stream_rest(
                                 message: None,
                                 timestamp: Some(chrono::Utc::now().to_rfc3339()),
                             },
-                            is_final: false,
                             metadata: Some(json!({"thinking": delta})),
                         };
                         emit!(
@@ -1745,7 +1750,6 @@ pub async fn handle_message_stream_rest(
                                 message: None,
                                 timestamp: Some(chrono::Utc::now().to_rfc3339()),
                             },
-                            is_final: false,
                             metadata: Some(json!({"toolCall": {"name": name, "args": args}})),
                         };
                         emit!(
@@ -1763,7 +1767,6 @@ pub async fn handle_message_stream_rest(
                                 message: None,
                                 timestamp: Some(chrono::Utc::now().to_rfc3339()),
                             },
-                            is_final: false,
                             metadata: Some(json!({"toolResult": {"name": name, "output": output}})),
                         };
                         emit!(
@@ -1867,6 +1870,35 @@ pub async fn handle_message_stream_rest(
                 task_store.mark_terminal(&tid).await;
             }
 
+            // If any artifact chunks were streamed and the task completed,
+            // emit a terminal artifact_update with `last_chunk=true` so clients
+            // know the chunk stream is done. Empty payload — content already
+            // accumulated via previous chunks. Per v1.0 proto.
+            if chunk_index > 0 && final_state == A2aTaskState::Completed {
+                let last_chunk_event = TaskArtifactUpdateEvent {
+                    task_id: tid.clone(),
+                    context_id: Some(ctx.clone()),
+                    artifact: Artifact {
+                        artifact_id: artifact_id.clone(),
+                        name: Some("response".to_string()),
+                        description: None,
+                        parts: vec![],
+                        metadata: None,
+                        extensions: None,
+                    },
+                    append: true,
+                    last_chunk: true,
+                    metadata: None,
+                };
+                let _ = sse_tx
+                    .send(
+                        Event::default()
+                            .event("artifact_update")
+                            .data(serde_json::to_string(&last_chunk_event).unwrap_or_default()),
+                    )
+                    .await;
+            }
+
             // Emit final status_update (best-effort — client may be gone)
             let final_event = TaskStatusUpdateEvent {
                 task_id: tid.clone(),
@@ -1876,7 +1908,6 @@ pub async fn handle_message_stream_rest(
                     message: Some(final_message),
                     timestamp: Some(chrono::Utc::now().to_rfc3339()),
                 },
-                is_final: true,
                 metadata: None,
             };
             let _ = sse_tx
@@ -3123,14 +3154,14 @@ mod tests {
                 message: None,
                 timestamp: Some("2026-01-01T00:00:00Z".into()),
             },
-            is_final: false,
             metadata: None,
         };
         let json = serde_json::to_value(&status_event).unwrap();
         assert_eq!(json["taskId"], "t-1");
         assert_eq!(json["contextId"], "ctx-1");
         assert_eq!(json["status"]["state"], "TASK_STATE_WORKING");
-        assert_eq!(json["final"], false);
+        // v1.0: no `final` field on TaskStatusUpdateEvent
+        assert!(json.get("final").is_none());
 
         let artifact_event = TaskArtifactUpdateEvent {
             task_id: "t-1".into(),
@@ -3143,16 +3174,40 @@ mod tests {
                     text: "chunk".into(),
                     metadata: None,
                 }],
-                metadata: Some(json!({"append": true, "chunkIndex": 1})),
+                metadata: Some(json!({"chunkIndex": 1})),
                 extensions: None,
             },
+            append: true,
+            last_chunk: false,
             metadata: None,
         };
         let json = serde_json::to_value(&artifact_event).unwrap();
         assert_eq!(json["taskId"], "t-1");
         assert_eq!(json["artifact"]["artifactId"], "a-1");
         assert_eq!(json["artifact"]["parts"][0]["text"], "chunk");
-        assert!(json["artifact"]["metadata"]["append"].as_bool().unwrap());
+        // v1.0: `append` is a top-level event field, not artifact metadata.
+        assert_eq!(json["append"], true);
+        // `lastChunk` defaults to false and is skipped when false.
+        assert!(json.get("lastChunk").is_none());
+
+        // Terminal chunk: last_chunk=true is serialized as `lastChunk`.
+        let terminal = TaskArtifactUpdateEvent {
+            task_id: "t-1".into(),
+            context_id: None,
+            artifact: Artifact {
+                artifact_id: "a-1".into(),
+                name: None,
+                description: None,
+                parts: vec![],
+                metadata: None,
+                extensions: None,
+            },
+            append: true,
+            last_chunk: true,
+            metadata: None,
+        };
+        let json = serde_json::to_value(&terminal).unwrap();
+        assert_eq!(json["lastChunk"], true);
     }
 
     // ── ListTasks tests ─────────────────────────────────────────
