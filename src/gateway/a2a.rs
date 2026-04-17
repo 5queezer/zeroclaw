@@ -401,12 +401,12 @@ pub fn generate_agent_card(config: &crate::config::Config) -> serde_json::Value 
     let name = a2a
         .agent_name
         .clone()
-        .unwrap_or_else(|| "ZeroClaw Agent".to_string());
+        .unwrap_or_else(|| "Hrafn Agent".to_string());
 
     let description = a2a
         .description
         .clone()
-        .unwrap_or_else(|| "ZeroClaw autonomous agent".to_string());
+        .unwrap_or_else(|| "Hrafn autonomous agent".to_string());
 
     let version = a2a
         .version
@@ -459,10 +459,10 @@ pub fn generate_agent_card(config: &crate::config::Config) -> serde_json::Value 
         "name": name,
         "description": description,
         "version": version,
-        "supported_interfaces": [{
+        "supportedInterfaces": [{
             "url": format!("{base_url}/"),
-            "protocol_binding": "JSONRPC",
-            "protocol_version": protocol_version
+            "protocolBinding": "JSONRPC",
+            "protocolVersion": protocol_version
         }],
         "capabilities": {
             "streaming": true,
@@ -472,20 +472,20 @@ pub fn generate_agent_card(config: &crate::config::Config) -> serde_json::Value 
         "defaultOutputModes": ["text/plain"],
         "skills": skills,
         "provider": {
-            "organization": "ZeroClaw",
+            "organization": "Hrafn",
             "url": provider_url
         }
     });
 
     if requires_auth {
-        card["security_schemes"] = json!({
+        card["securitySchemes"] = json!({
             "bearer": {
-                "http_auth_security_scheme": {
+                "httpAuthSecurityScheme": {
                     "scheme": "Bearer"
                 }
             }
         });
-        card["security_requirements"] = json!([{
+        card["securityRequirements"] = json!([{
             "schemes": {
                 "bearer": { "list": [] }
             }
@@ -2254,18 +2254,18 @@ mod tests {
         };
 
         let card = generate_agent_card(&config);
-        assert_eq!(card["name"], "ZeroClaw Agent");
-        // v1.0: supported_interfaces replaces top-level url
-        let ifaces = card["supported_interfaces"].as_array().unwrap();
+        assert_eq!(card["name"], "Hrafn Agent");
+        // v1.0: supportedInterfaces replaces top-level url
+        let ifaces = card["supportedInterfaces"].as_array().unwrap();
         assert_eq!(ifaces.len(), 1);
         assert!(ifaces[0]["url"].as_str().unwrap().starts_with("http://"));
-        assert_eq!(ifaces[0]["protocol_binding"], "JSONRPC");
-        assert_eq!(ifaces[0]["protocol_version"], "1.0");
+        assert_eq!(ifaces[0]["protocolBinding"], "JSONRPC");
+        assert_eq!(ifaces[0]["protocolVersion"], "1.0");
         assert!(card["capabilities"].is_object());
         assert_eq!(card["capabilities"]["streaming"], true);
-        // v1.0: security_schemes replaces authentication
-        assert!(card["security_schemes"]["bearer"].is_object());
-        assert!(card["security_requirements"].is_array());
+        // v1.0: securitySchemes replaces authentication
+        assert!(card["securitySchemes"]["bearer"].is_object());
+        assert!(card["securityRequirements"].is_array());
         // v1.0: MIME types instead of bare "text"
         assert_eq!(card["defaultInputModes"][0], "text/plain");
         assert_eq!(card["defaultOutputModes"][0], "text/plain");
@@ -2296,8 +2296,8 @@ mod tests {
         let card = generate_agent_card(&config);
         assert_eq!(card["name"], "my-agent");
         assert_eq!(card["description"], "My custom agent");
-        // v1.0: URL is in supported_interfaces
-        let ifaces = card["supported_interfaces"].as_array().unwrap();
+        // v1.0: URL is in supportedInterfaces
+        let ifaces = card["supportedInterfaces"].as_array().unwrap();
         assert!(
             ifaces[0]["url"]
                 .as_str()
@@ -2457,7 +2457,7 @@ mod tests {
         let resp = handle_agent_card(State(state)).await.into_response();
         assert_eq!(resp.status(), StatusCode::OK);
         let body = response_json(resp).await;
-        assert_eq!(body["name"], "ZeroClaw Agent");
+        assert_eq!(body["name"], "Hrafn Agent");
         assert!(body["skills"].is_array());
     }
 
