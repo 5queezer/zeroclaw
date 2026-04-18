@@ -290,41 +290,81 @@ impl App {
             return;
         }
 
-        match text.as_str() {
-            "/quit" => {
-                self.should_quit = true;
+        if text == "/quit" {
+            self.should_quit = true;
+        } else if text == "/clear" {
+            self.messages.clear();
+            self.scroll_offset = 0;
+        } else if text == "/help" {
+            self.push_system("Commands:".into());
+            self.push_system("  /quit   - Exit the TUI".into());
+            self.push_system("  /clear  - Clear output".into());
+            self.push_system("  /title <text> - Set explicit session title".into());
+            self.push_system("  /help   - Show this help".into());
+            self.push_system("  ESC     - Cancel in-progress request".into());
+            self.push_system("  Shift+Enter - Insert newline".into());
+            self.push_system("  Ctrl+B  - Toggle sidebar".into());
+            self.push_system("  Ctrl+P  - Toggle command palette".into());
+        } else if let Some(rest) = text.strip_prefix("/title ") {
+            let title = rest.trim();
+            if title.is_empty() {
+                self.push_system("[usage: /title <new title>]".into());
+            } else if let Some(h) = self.session.as_ref() {
+                match h.set_title(title, true) {
+                    Ok(()) => self.push_system(format!("[title set: {title}]")),
+                    Err(e) => self.push_system(format!("[title set failed: {e}]")),
+                }
+            } else {
+                self.push_system("[no session active]".into());
             }
-            "/clear" => {
-                self.messages.clear();
-                self.scroll_offset = 0;
-            }
-            "/help" => {
-                self.push_system("Commands:".into());
-                self.push_system("  /quit   - Exit the TUI".into());
-                self.push_system("  /clear  - Clear output".into());
-                self.push_system("  /help   - Show this help".into());
-                self.push_system("  ESC     - Cancel in-progress request".into());
-                self.push_system("  Shift+Enter - Insert newline".into());
-                self.push_system("  Ctrl+B  - Toggle sidebar".into());
-                self.push_system("  Ctrl+P  - Toggle command palette".into());
-            }
-            _ => {
-                let persist_text = text.clone();
-                match tx.try_send(text.clone()) {
-                    Ok(()) => {
-                        self.messages.push(ChatMessage::User { text });
-                        if self.auto_scroll {
-                            self.scroll_offset = u16::MAX;
-                        }
-                        self.spinner = Some(SpinnerState::new("pondering"));
-                        self.persist(&ChatMessage::User { text: persist_text });
+        } else {
+            let persist_text = text.clone();
+            match tx.try_send(text.clone()) {
+                Ok(()) => {
+                    self.messages.push(ChatMessage::User { text });
+                    if self.auto_scroll {
+                        self.scroll_offset = u16::MAX;
                     }
-                    Err(_) => {
-                        self.textarea.insert_str(&text);
-                        self.push_system("[send failed \u{2014} channel full]".into());
-                    }
+                    self.spinner = Some(SpinnerState::new("pondering"));
+                    self.persist(&ChatMessage::User { text: persist_text });
+                }
+                Err(_) => {
+                    self.textarea.insert_str(&text);
+                    self.push_system("[send failed \u{2014} channel full]".into());
                 }
             }
+        }
+    }
+
+    pub(crate) fn maybe_set_first_message_title(&mut self) {
+        let Some(handle) = self.session.as_ref() else {
+            return;
+        };
+
+        // Only fire on the very first completed turn.
+        let assistant_count = self
+            .messages
+            .iter()
+            .filter(|m| matches!(m, ChatMessage::Assistant { .. }))
+            .count();
+        if assistant_count != 1 {
+            return;
+        }
+
+        let Some(ChatMessage::User { text }) = self
+            .messages
+            .iter()
+            .find(|m| matches!(m, ChatMessage::User { .. }))
+        else {
+            return;
+        };
+
+        let title = derive_title_from(text);
+        if title.is_empty() {
+            return;
+        }
+        if let Err(e) = handle.set_title(&title, false) {
+            tracing::warn!(error = %e, "first-message title fallback failed");
         }
     }
 
@@ -536,6 +576,77 @@ fn handle_key_event(app: &mut App, tx: &mpsc::Sender<String>, key: KeyEvent) -> 
             app.textarea.input(key);
             false
         }
+    }
+}
+
+/// Derive a short session title from the first user message.
+/// Returns the first line (trimmed, max 60 visible chars + "…" if truncated).
+pub(crate) fn derive_title_from(first_user_msg: &str) -> String {
+    let first_line = first_user_msg.lines().next().unwrap_or("").trim();
+    let count = first_line.chars().count();
+    if count <= 60 {
+        return first_line.to_string();
+    }
+    let mut out: String = first_line.chars().take(60).collect();
+    out.push('…');
+    out
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::*;
+
+    #[test]
+    fn derive_title_truncates_and_ellipsis() {
+        let input = "this is a fairly long first line that should get truncated by the fallback helper because it exceeds sixty characters";
+        let t = derive_title_from(input);
+        // 60 visible chars + "…" (3 UTF-8 bytes).
+        let visible: usize = t.chars().count();
+        assert!(visible == 61, "visible chars = {visible}, title = {t:?}");
+        assert!(t.ends_with('…'));
+    }
+
+    #[test]
+    fn derive_title_short_unchanged() {
+        assert_eq!(derive_title_from("hello"), "hello");
+    }
+
+    #[test]
+    fn derive_title_trims_surrounding_whitespace() {
+        assert_eq!(derive_title_from("   hello   "), "hello");
+    }
+
+    #[test]
+    fn derive_title_first_line_only() {
+        assert_eq!(derive_title_from("first line\nsecond line"), "first line");
+    }
+
+    #[test]
+    fn derive_title_empty_string() {
+        assert_eq!(derive_title_from(""), "");
+    }
+}
+
+#[cfg(test)]
+mod title_cmd_tests {
+    use super::*;
+    use crate::session::SessionStore;
+    use std::path::Path;
+    use std::sync::Arc;
+
+    #[test]
+    fn title_slash_sets_explicit_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SessionStore::open(&dir.path().join("s.db")).unwrap());
+        let meta = store.create(Path::new("/tmp"), None, None, None).unwrap();
+        let h = SessionHandle::new(Arc::clone(&store), meta.id.clone());
+        let mut app = App::with_session(h);
+        app.textarea.insert_str("/title My New Title");
+        let (tx, _rx) = tokio::sync::mpsc::channel::<String>(1);
+        app.handle_submit(&tx);
+        let loaded = store.load(&meta.id).unwrap();
+        assert_eq!(loaded.meta.title.as_deref(), Some("My New Title"));
+        assert!(loaded.meta.title_explicit);
     }
 }
 

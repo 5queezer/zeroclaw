@@ -42,6 +42,7 @@ pub(crate) fn handle_turn_event(app: &mut App, event: TurnEvent) {
                 app.push_assistant(text);
             }
             app.spinner = None;
+            app.maybe_set_first_message_title();
         }
     }
 }

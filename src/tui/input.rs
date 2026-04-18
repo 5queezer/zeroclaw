@@ -17,7 +17,7 @@ pub(crate) fn create_textarea() -> TextArea<'static> {
     );
     textarea.set_style(theme::style());
     textarea.set_cursor_line_style(theme::style());
-    textarea.set_placeholder_text("> ");
+    textarea.set_placeholder_text("\u{276F} ");
     textarea.set_placeholder_style(theme::dim());
     textarea
 }
