@@ -1,3 +1,4 @@
+mod autocomplete;
 pub mod banner;
 mod chat;
 mod command;
@@ -103,6 +104,10 @@ pub struct App {
     // Input
     pub(crate) textarea: TextArea<'static>,
 
+    // Slash-command autocomplete
+    pub(crate) autocomplete_selected: usize,
+    pub(crate) autocomplete_dismissed: bool,
+
     // Command palette
     pub(crate) palette_open: bool,
     pub(crate) palette_query: String,
@@ -151,6 +156,8 @@ impl App {
             memory_activity: Vec::new(),
             peripheral_status: Vec::new(),
             textarea: input::create_textarea(),
+            autocomplete_selected: 0,
+            autocomplete_dismissed: false,
             palette_open: false,
             palette_query: String::new(),
             palette_items: vec![
@@ -234,6 +241,10 @@ impl App {
         }
     }
 
+    pub(crate) fn current_buffer(&self) -> String {
+        self.textarea.lines().join("\n")
+    }
+
     fn draw(&mut self, frame: &mut Frame) {
         let outer_chunks = if self.sidebar_visible {
             Layout::default()
@@ -270,6 +281,21 @@ impl App {
         // Input box
         let input_idx = main_chunks.len() - 2;
         input::render_input(frame, main_chunks[input_idx], &self.textarea);
+
+        // Slash-command autocomplete popup (anchored above input)
+        let buf = self.current_buffer();
+        if !self.autocomplete_dismissed && autocomplete::is_autocomplete_context(&buf) {
+            let items = autocomplete::filter(&buf, autocomplete::BUILTINS);
+            if !items.is_empty() && self.autocomplete_selected >= items.len() {
+                self.autocomplete_selected = items.len() - 1;
+            }
+            autocomplete::render_autocomplete(
+                frame,
+                main_chunks[input_idx],
+                &items,
+                self.autocomplete_selected,
+            );
+        }
 
         // Status bar (bottom line)
         let status_idx = main_chunks.len() - 1;
@@ -346,6 +372,11 @@ impl App {
     }
 
     fn handle_submit(&mut self, tx: &mpsc::Sender<String>) {
+        // Submit clears the buffer; reset dismiss flag so the next typed
+        // '/'-prefixed input shows the popup again.
+        self.autocomplete_dismissed = false;
+        self.autocomplete_selected = 0;
+
         let lines: Vec<String> = self.textarea.lines().to_vec();
         let text = lines.join("\n").trim().to_string();
         self.textarea.select_all();
@@ -374,6 +405,7 @@ impl App {
             self.push_system("  Ctrl+B  - Toggle sidebar".into());
             self.push_system("  Ctrl+P  - Toggle command palette".into());
             self.push_system("  Ctrl+R  - Open session picker".into());
+            self.push_system("  Tab (after `/...`) - Autocomplete slash command".into());
         } else if let Some(rest) = text.strip_prefix("/title ") {
             let title = rest.trim();
             if title.is_empty() {
@@ -666,6 +698,43 @@ fn handle_key_event(app: &mut App, tx: &mpsc::Sender<String>, key: KeyEvent) -> 
         return false;
     }
 
+    // Slash-command autocomplete intercept (only when popup is live).
+    // Placed before the main match so Tab/Up/Down/Esc can drive the popup
+    // without being intercepted as scroll/cancel/textarea input.
+    let buf = app.current_buffer();
+    let autocomplete_live =
+        !app.autocomplete_dismissed && autocomplete::is_autocomplete_context(&buf);
+    if autocomplete_live {
+        let items = autocomplete::filter(&buf, autocomplete::BUILTINS);
+        match key.code {
+            KeyCode::Esc => {
+                app.autocomplete_dismissed = true;
+                return false;
+            }
+            KeyCode::Up => {
+                app.autocomplete_selected = app.autocomplete_selected.saturating_sub(1);
+                return false;
+            }
+            KeyCode::Down => {
+                if !items.is_empty() {
+                    app.autocomplete_selected =
+                        (app.autocomplete_selected + 1).min(items.len() - 1);
+                }
+                return false;
+            }
+            KeyCode::Tab => {
+                if let Some(c) = items.get(app.autocomplete_selected) {
+                    app.textarea.select_all();
+                    app.textarea.cut();
+                    app.textarea.insert_str(format!("{} ", c.name));
+                    app.autocomplete_selected = 0;
+                }
+                return false;
+            }
+            _ => {}
+        }
+    }
+
     match key.code {
         // Ctrl+B: toggle sidebar
         KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -716,6 +785,11 @@ fn handle_key_event(app: &mut App, tx: &mpsc::Sender<String>, key: KeyEvent) -> 
         _ => {
             // Let tui-textarea handle the key event
             app.textarea.input(key);
+            // If the buffer no longer starts with '/', reset the dismiss
+            // latch so a fresh '/' press re-opens the popup.
+            if !app.textarea.lines().join("\n").starts_with('/') {
+                app.autocomplete_dismissed = false;
+            }
             false
         }
     }
