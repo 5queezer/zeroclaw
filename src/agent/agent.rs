@@ -1807,6 +1807,54 @@ mod tests {
         assert_eq!(history.len(), 3);
     }
 
+    #[test]
+    fn seed_history_populates_history_in_order() {
+        let provider = Box::new(MockProvider {
+            responses: Mutex::new(vec![]),
+        });
+
+        let memory_cfg = crate::config::MemoryConfig {
+            backend: "none".into(),
+            ..crate::config::MemoryConfig::default()
+        };
+        let mem: Arc<dyn Memory> = Arc::from(
+            crate::memory::create_memory(&memory_cfg, std::path::Path::new("/tmp"), None)
+                .expect("memory creation should succeed with valid config"),
+        );
+
+        let observer: Arc<dyn Observer> = Arc::from(crate::observability::NoopObserver {});
+        let mut agent = Agent::builder()
+            .provider(provider)
+            .tools(vec![Box::new(MockTool)])
+            .memory(mem)
+            .observer(observer)
+            .tool_dispatcher(Box::new(NativeToolDispatcher))
+            .workspace_dir(std::path::PathBuf::from("/tmp"))
+            .build()
+            .expect("agent builder should succeed with valid config");
+
+        let seed = vec![
+            ChatMessage::user("first".to_string()),
+            ChatMessage::assistant("reply".to_string()),
+            ChatMessage::user("second".to_string()),
+        ];
+        agent.seed_history(&seed);
+
+        // Extract user/assistant content in order; skip the synthesized system
+        // prompt that `seed_history` prepends when history is empty.
+        let seeded_content: Vec<&str> = agent
+            .history()
+            .iter()
+            .filter_map(|m| match m {
+                ConversationMessage::Chat(c) if c.role == "user" || c.role == "assistant" => {
+                    Some(c.content.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(seeded_content, vec!["first", "reply", "second"]);
+    }
+
     /// Mock provider that captures whether tool specs were passed to `stream_chat`
     /// and returns a tool call followed by a text response through the stream.
     struct StreamToolCaptureProvider {
