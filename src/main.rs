@@ -116,7 +116,7 @@ fn to_provider_history(msgs: &[hrafn::tui::ChatMessage]) -> Vec<hrafn::providers
 async fn run_interactive_tui(boot: Option<SessionBoot>) -> Result<()> {
     use hrafn::agent::TurnEvent;
     use hrafn::session::{SessionId, SessionStore};
-    use hrafn::tui::{ChatMessage, SessionHandle, spawn_tui, spawn_tui_resumed};
+    use hrafn::tui::{ChatMessage, SessionHandle, spawn_tui_resumed};
     use std::sync::Arc;
     use tokio::sync::mpsc;
 
@@ -190,10 +190,21 @@ async fn run_interactive_tui(boot: Option<SessionBoot>) -> Result<()> {
     let (user_tx, user_rx) = mpsc::channel::<String>(32);
     let (turn_event_tx, turn_event_rx) = mpsc::channel::<TurnEvent>(256);
 
-    let tui_handle = match resumed_messages {
-        Some(msgs) => spawn_tui_resumed(user_tx, turn_event_rx, handle, msgs),
-        None => spawn_tui(user_tx, turn_event_rx, Some(handle)),
+    // Load fresh meta for banner (session may have been just created/updated).
+    let meta = store.load(handle.id())?.meta;
+    let prior_count = resumed_messages.as_ref().map_or(0, Vec::len);
+    let banner_msgs = hrafn::tui::banner::build_banner_messages(&meta, prior_count);
+
+    let tui_initial_messages: Vec<ChatMessage> = match resumed_messages {
+        Some(mut rm) => {
+            let mut v = banner_msgs;
+            v.append(&mut rm);
+            v
+        }
+        None => banner_msgs,
     };
+
+    let tui_handle = spawn_tui_resumed(user_tx, turn_event_rx, handle, tui_initial_messages);
 
     // Run the agent in TUI mode (blocks until user_rx closes).
     let agent_result = Box::pin(hrafn::agent::run_tui(

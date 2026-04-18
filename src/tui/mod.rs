@@ -1,8 +1,10 @@
+pub mod banner;
 mod chat;
 mod command;
 mod events;
 mod input;
 mod sidebar;
+mod statusbar;
 pub mod theme;
 
 use std::io;
@@ -113,6 +115,11 @@ pub struct App {
     pub(crate) session: Option<SessionHandle>,
     pub(crate) persist_retry_count: u8,
 
+    // Status bar
+    pub(crate) git_status: statusbar::GitStatus,
+    pub(crate) permission_mode: Option<String>,
+    pub(crate) context_window: Option<u32>,
+
     // Control
     pub(crate) should_quit: bool,
     pub(crate) tick: usize,
@@ -152,6 +159,9 @@ impl App {
             spinner: None,
             session: None,
             persist_retry_count: 0,
+            git_status: statusbar::GitStatus::new(),
+            permission_mode: None,
+            context_window: None,
             should_quit: false,
             tick: 0,
         }
@@ -239,8 +249,30 @@ impl App {
         }
 
         // Input box
-        let input_idx = if self.spinner.is_some() { 2 } else { 1 };
+        let input_idx = main_chunks.len() - 2;
         input::render_input(frame, main_chunks[input_idx], &self.textarea);
+
+        // Status bar (bottom line)
+        let status_idx = main_chunks.len() - 1;
+        let (branch, dirty) = self.git_status.snapshot();
+        let pct = self.context_window.filter(|w| *w > 0).map(|w| {
+            let used = self.agent_info.input_tokens + self.agent_info.output_tokens;
+            let p = used.saturating_mul(100).saturating_div(u64::from(w));
+            u8::try_from(p).unwrap_or(99)
+        });
+        let info = statusbar::StatusInfo {
+            model: if self.agent_info.model.is_empty() {
+                None
+            } else {
+                Some(self.agent_info.model.as_str())
+            },
+            branch,
+            dirty,
+            context_percent: pct,
+            perm_mode: self.permission_mode.as_deref(),
+            hint: "/help  Ctrl+P palette",
+        };
+        statusbar::render_status_bar(frame, main_chunks[status_idx], &info);
 
         // Sidebar (when visible)
         if self.sidebar_visible {
@@ -274,9 +306,14 @@ impl App {
                 Constraint::Min(3),
                 Constraint::Length(1),
                 Constraint::Length(3),
+                Constraint::Length(1),
             ]
         } else {
-            vec![Constraint::Min(3), Constraint::Length(3)]
+            vec![
+                Constraint::Min(3),
+                Constraint::Length(3),
+                Constraint::Length(1),
+            ]
         }
     }
 
