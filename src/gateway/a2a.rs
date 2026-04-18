@@ -186,50 +186,228 @@ pub fn spawn_eviction_task(
 
 // ── v1.0 Protocol Types ─────────────────────────────────────────
 
-/// A2A v1.0 message part — oneof discriminated by which field is present.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
+/// A2A v1.0 message part — proto3 `oneof content` with sibling metadata fields.
+///
+/// Wire shape is a flat JSON object: the presence of `text`, `raw`, `url`, or
+/// `data` selects the variant; `metadata`, `filename`, and `mediaType` are
+/// always top-level siblings. `raw` is base64-encoded on the wire per proto3
+/// canonical JSON.
+#[derive(Debug, Clone)]
 pub enum Part {
     Text {
         text: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
         metadata: Option<serde_json::Value>,
+        filename: Option<String>,
+        media_type: Option<String>,
     },
-    File {
-        #[serde(rename = "file")]
-        file: FileContent,
-        #[serde(skip_serializing_if = "Option::is_none")]
+    Raw {
+        raw: Vec<u8>,
         metadata: Option<serde_json::Value>,
+        filename: Option<String>,
+        media_type: Option<String>,
+    },
+    Url {
+        url: String,
+        metadata: Option<serde_json::Value>,
+        filename: Option<String>,
+        media_type: Option<String>,
     },
     Data {
         data: serde_json::Value,
-        #[serde(skip_serializing_if = "Option::is_none")]
         metadata: Option<serde_json::Value>,
+        filename: Option<String>,
+        media_type: Option<String>,
     },
 }
 
-/// File content — either inline bytes or a URL reference.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FileContent {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(rename = "mimeType", skip_serializing_if = "Option::is_none")]
-    pub mime_type: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bytes: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub uri: Option<String>,
+impl Serialize for Part {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+        use serde::ser::SerializeMap;
+
+        // Extract the shared sibling fields plus the discriminator entry.
+        let (key, value, metadata, filename, media_type): (
+            &'static str,
+            serde_json::Value,
+            &Option<serde_json::Value>,
+            &Option<String>,
+            &Option<String>,
+        ) = match self {
+            Part::Text {
+                text,
+                metadata,
+                filename,
+                media_type,
+            } => (
+                "text",
+                serde_json::Value::String(text.clone()),
+                metadata,
+                filename,
+                media_type,
+            ),
+            Part::Raw {
+                raw,
+                metadata,
+                filename,
+                media_type,
+            } => (
+                "raw",
+                serde_json::Value::String(B64.encode(raw)),
+                metadata,
+                filename,
+                media_type,
+            ),
+            Part::Url {
+                url,
+                metadata,
+                filename,
+                media_type,
+            } => (
+                "url",
+                serde_json::Value::String(url.clone()),
+                metadata,
+                filename,
+                media_type,
+            ),
+            Part::Data {
+                data,
+                metadata,
+                filename,
+                media_type,
+            } => ("data", data.clone(), metadata, filename, media_type),
+        };
+
+        let mut len = 1;
+        if metadata.is_some() {
+            len += 1;
+        }
+        if filename.is_some() {
+            len += 1;
+        }
+        if media_type.is_some() {
+            len += 1;
+        }
+
+        let mut map = serializer.serialize_map(Some(len))?;
+        map.serialize_entry(key, &value)?;
+        if let Some(m) = metadata {
+            map.serialize_entry("metadata", m)?;
+        }
+        if let Some(f) = filename {
+            map.serialize_entry("filename", f)?;
+        }
+        if let Some(m) = media_type {
+            map.serialize_entry("mediaType", m)?;
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for Part {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+        use serde::de::Error as _;
+
+        let mut obj = serde_json::Map::<String, serde_json::Value>::deserialize(deserializer)?;
+        let metadata = obj.remove("metadata");
+        let filename = obj
+            .remove("filename")
+            .and_then(|v| v.as_str().map(str::to_owned));
+        let media_type = obj
+            .remove("mediaType")
+            .and_then(|v| v.as_str().map(str::to_owned));
+
+        // Exactly one of text/raw/url/data must be present.
+        let present: Vec<&str> = ["text", "raw", "url", "data"]
+            .into_iter()
+            .filter(|k| obj.contains_key(*k))
+            .collect();
+        if present.len() != 1 {
+            return Err(D::Error::custom(format!(
+                "Part must contain exactly one of text/raw/url/data, got {present:?}"
+            )));
+        }
+
+        match present[0] {
+            "text" => {
+                let text = obj
+                    .remove("text")
+                    .and_then(|v| match v {
+                        serde_json::Value::String(s) => Some(s),
+                        _ => None,
+                    })
+                    .ok_or_else(|| D::Error::custom("Part.text must be a string"))?;
+                Ok(Part::Text {
+                    text,
+                    metadata,
+                    filename,
+                    media_type,
+                })
+            }
+            "raw" => {
+                let encoded = obj
+                    .remove("raw")
+                    .and_then(|v| match v {
+                        serde_json::Value::String(s) => Some(s),
+                        _ => None,
+                    })
+                    .ok_or_else(|| D::Error::custom("Part.raw must be a base64 string"))?;
+                let raw = B64
+                    .decode(encoded.as_bytes())
+                    .map_err(|e| D::Error::custom(format!("Part.raw base64 decode: {e}")))?;
+                Ok(Part::Raw {
+                    raw,
+                    metadata,
+                    filename,
+                    media_type,
+                })
+            }
+            "url" => {
+                let url = obj
+                    .remove("url")
+                    .and_then(|v| match v {
+                        serde_json::Value::String(s) => Some(s),
+                        _ => None,
+                    })
+                    .ok_or_else(|| D::Error::custom("Part.url must be a string"))?;
+                Ok(Part::Url {
+                    url,
+                    metadata,
+                    filename,
+                    media_type,
+                })
+            }
+            "data" => {
+                let data = obj
+                    .remove("data")
+                    .ok_or_else(|| D::Error::custom("Part.data missing"))?;
+                Ok(Part::Data {
+                    data,
+                    metadata,
+                    filename,
+                    media_type,
+                })
+            }
+            _ => unreachable!(),
+        }
+    }
 }
 
 /// A2A v1.0 Message object.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Message {
     pub role: String,
     pub parts: Vec<Part>,
-    #[serde(rename = "messageId")]
     pub message_id: String,
-    #[serde(rename = "contextId", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub context_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub extensions: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub reference_task_ids: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
 }
@@ -743,10 +921,15 @@ async fn handle_message_send(
                         parts: vec![Part::Text {
                             text: response.clone(),
                             metadata: None,
+                            filename: None,
+                            media_type: None,
                         }],
                         message_id: uuid::Uuid::new_v4().to_string(),
                         context_id: Some(ctx.clone()),
                         metadata: None,
+                        task_id: None,
+                        extensions: Vec::new(),
+                        reference_task_ids: Vec::new(),
                     };
                     let artifact = Artifact {
                         artifact_id: uuid::Uuid::new_v4().to_string(),
@@ -755,6 +938,8 @@ async fn handle_message_send(
                         parts: vec![Part::Text {
                             text: response,
                             metadata: None,
+                            filename: None,
+                            media_type: None,
                         }],
                         metadata: None,
                         extensions: None,
@@ -788,10 +973,15 @@ async fn handle_message_send(
                         parts: vec![Part::Text {
                             text: "Internal processing error".to_string(),
                             metadata: None,
+                            filename: None,
+                            media_type: None,
                         }],
                         message_id: uuid::Uuid::new_v4().to_string(),
                         context_id: Some(ctx.clone()),
                         metadata: None,
+                        task_id: None,
+                        extensions: Vec::new(),
+                        reference_task_ids: Vec::new(),
                     };
                     let task = Task {
                         id: tid.clone(),
@@ -863,10 +1053,15 @@ async fn handle_message_send(
                 parts: vec![Part::Text {
                     text: response.clone(),
                     metadata: None,
+                    filename: None,
+                    media_type: None,
                 }],
                 message_id: uuid::Uuid::new_v4().to_string(),
                 context_id: Some(context_id.clone()),
                 metadata: None,
+                task_id: None,
+                extensions: Vec::new(),
+                reference_task_ids: Vec::new(),
             };
 
             let artifact = Artifact {
@@ -876,6 +1071,8 @@ async fn handle_message_send(
                 parts: vec![Part::Text {
                     text: response,
                     metadata: None,
+                    filename: None,
+                    media_type: None,
                 }],
                 metadata: None,
                 extensions: None,
@@ -929,10 +1126,15 @@ async fn handle_message_send(
                 parts: vec![Part::Text {
                     text: "Internal processing error".to_string(),
                     metadata: None,
+                    filename: None,
+                    media_type: None,
                 }],
                 message_id: uuid::Uuid::new_v4().to_string(),
                 context_id: Some(context_id.clone()),
                 metadata: None,
+                task_id: None,
+                extensions: Vec::new(),
+                reference_task_ids: Vec::new(),
             };
 
             let task = Task {
@@ -1656,10 +1858,15 @@ pub async fn handle_message_stream_rest(
                             parts: vec![Part::Text {
                                 text: "Internal processing error".to_string(),
                                 metadata: None,
+                                filename: None,
+                                media_type: None,
                             }],
                             message_id: uuid::Uuid::new_v4().to_string(),
                             context_id: Some(ctx.clone()),
                             metadata: None,
+                            task_id: None,
+                            extensions: Vec::new(),
+                            reference_task_ids: Vec::new(),
                         }),
                         timestamp: Some(chrono::Utc::now().to_rfc3339()),
                     };
@@ -1721,6 +1928,8 @@ pub async fn handle_message_stream_rest(
                                 parts: vec![Part::Text {
                                     text: delta,
                                     metadata: None,
+                                    filename: None,
+                                    media_type: None,
                                 }],
                                 metadata: Some(json!({"chunkIndex": chunk_index})),
                                 extensions: None,
@@ -1811,10 +2020,15 @@ pub async fn handle_message_stream_rest(
                             parts: vec![Part::Text {
                                 text: text.clone(),
                                 metadata: None,
+                                filename: None,
+                                media_type: None,
                             }],
                             message_id: uuid::Uuid::new_v4().to_string(),
                             context_id: Some(ctx.clone()),
                             metadata: None,
+                            task_id: None,
+                            extensions: Vec::new(),
+                            reference_task_ids: Vec::new(),
                         },
                         Some(Artifact {
                             artifact_id: artifact_id.clone(),
@@ -1823,6 +2037,8 @@ pub async fn handle_message_stream_rest(
                             parts: vec![Part::Text {
                                 text,
                                 metadata: None,
+                                filename: None,
+                                media_type: None,
                             }],
                             metadata: None,
                             extensions: None,
@@ -1836,10 +2052,15 @@ pub async fn handle_message_stream_rest(
                         parts: vec![Part::Text {
                             text: "Internal processing error".to_string(),
                             metadata: None,
+                            filename: None,
+                            media_type: None,
                         }],
                         message_id: uuid::Uuid::new_v4().to_string(),
                         context_id: Some(ctx.clone()),
                         metadata: None,
+                        task_id: None,
+                        extensions: Vec::new(),
+                        reference_task_ids: Vec::new(),
                     },
                     None,
                 ),
@@ -1990,6 +2211,8 @@ fn parse_inbound_message(
                 parts: vec![Part::Text {
                     text: text.clone(),
                     metadata: None,
+                    filename: None,
+                    media_type: None,
                 }],
                 message_id: msg_obj
                     .get("messageId")
@@ -1998,6 +2221,9 @@ fn parse_inbound_message(
                     .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
                 context_id: Some(ctx_id.clone()),
                 metadata: msg_obj.get("metadata").cloned(),
+                task_id: None,
+                extensions: Vec::new(),
+                reference_task_ids: Vec::new(),
             },
         };
 
@@ -2013,10 +2239,15 @@ fn parse_inbound_message(
             parts: vec![Part::Text {
                 text: text.clone(),
                 metadata: None,
+                filename: None,
+                media_type: None,
             }],
             message_id: uuid::Uuid::new_v4().to_string(),
             context_id: Some(ctx_id.clone()),
             metadata: None,
+            task_id: None,
+            extensions: Vec::new(),
+            reference_task_ids: Vec::new(),
         };
         Ok((text, inbound, ctx_id))
     } else {
@@ -2468,6 +2699,8 @@ mod tests {
                     parts: vec![Part::Text {
                         text: "done".to_string(),
                         metadata: None,
+                        filename: None,
+                        media_type: None,
                     }],
                     metadata: None,
                     extensions: None,
@@ -2667,6 +2900,8 @@ mod tests {
                         parts: vec![Part::Text {
                             text: "result".to_string(),
                             metadata: None,
+                            filename: None,
+                            media_type: None,
                         }],
                         metadata: None,
                         extensions: None,
@@ -3227,6 +3462,122 @@ mod tests {
         assert!(parse_inbound_message(&params).is_err());
     }
 
+    // ── v1.0 Part + Message shape tests ──────────────────────────
+
+    #[test]
+    fn part_text_serializes_flat_with_optional_siblings_omitted() {
+        let p = Part::Text {
+            text: "hi".into(),
+            metadata: None,
+            filename: None,
+            media_type: None,
+        };
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v, json!({"text": "hi"}));
+    }
+
+    #[test]
+    fn part_url_serializes_with_filename_and_media_type_camelcase() {
+        let p = Part::Url {
+            url: "https://example.com/x.png".into(),
+            metadata: None,
+            filename: Some("image.png".into()),
+            media_type: Some("image/png".into()),
+        };
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(
+            v,
+            json!({
+                "url": "https://example.com/x.png",
+                "filename": "image.png",
+                "mediaType": "image/png",
+            })
+        );
+    }
+
+    #[test]
+    fn part_raw_roundtrips_base64() {
+        let p = Part::Raw {
+            raw: vec![0x01, 0x02, 0x03, 0xff],
+            metadata: None,
+            filename: None,
+            media_type: Some("application/octet-stream".into()),
+        };
+        let json = serde_json::to_value(&p).unwrap();
+        assert_eq!(json["raw"], "AQID/w==");
+        let back: Part = serde_json::from_value(json).unwrap();
+        match back {
+            Part::Raw { raw, .. } => assert_eq!(raw, vec![0x01, 0x02, 0x03, 0xff]),
+            _ => panic!("expected Raw variant"),
+        }
+    }
+
+    #[test]
+    fn part_data_roundtrips_arbitrary_value() {
+        let p = Part::Data {
+            data: json!({"k": 42}),
+            metadata: Some(json!({"source": "tool"})),
+            filename: None,
+            media_type: None,
+        };
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["data"], json!({"k": 42}));
+        assert_eq!(v["metadata"], json!({"source": "tool"}));
+        let back: Part = serde_json::from_value(v).unwrap();
+        assert!(matches!(back, Part::Data { .. }));
+    }
+
+    #[test]
+    fn part_rejects_multiple_oneof_fields() {
+        let v = json!({"text": "a", "url": "b"});
+        let r: Result<Part, _> = serde_json::from_value(v);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn message_serializes_with_camelcase_and_new_fields() {
+        let m = Message {
+            role: "ROLE_USER".into(),
+            parts: vec![Part::Text {
+                text: "hi".into(),
+                metadata: None,
+                filename: None,
+                media_type: None,
+            }],
+            message_id: "m-1".into(),
+            context_id: Some("ctx-1".into()),
+            task_id: Some("t-1".into()),
+            extensions: vec!["ext-a".into()],
+            reference_task_ids: vec!["t-prev".into()],
+            metadata: None,
+        };
+        let v = serde_json::to_value(&m).unwrap();
+        assert_eq!(v["messageId"], "m-1");
+        assert_eq!(v["contextId"], "ctx-1");
+        assert_eq!(v["taskId"], "t-1");
+        assert_eq!(v["extensions"][0], "ext-a");
+        assert_eq!(v["referenceTaskIds"][0], "t-prev");
+    }
+
+    #[test]
+    fn message_omits_empty_optional_fields() {
+        let m = Message {
+            role: "ROLE_USER".into(),
+            parts: vec![],
+            message_id: "m-1".into(),
+            context_id: None,
+            task_id: None,
+            extensions: Vec::new(),
+            reference_task_ids: Vec::new(),
+            metadata: None,
+        };
+        let v = serde_json::to_value(&m).unwrap();
+        assert!(v.get("taskId").is_none());
+        assert!(v.get("extensions").is_none());
+        assert!(v.get("referenceTaskIds").is_none());
+        assert!(v.get("metadata").is_none());
+    }
+
     #[test]
     fn streaming_event_serialization() {
         let status_event = TaskStatusUpdateEvent {
@@ -3256,6 +3607,8 @@ mod tests {
                 parts: vec![Part::Text {
                     text: "chunk".into(),
                     metadata: None,
+                    filename: None,
+                    media_type: None,
                 }],
                 metadata: Some(json!({"chunkIndex": 1})),
                 extensions: None,
@@ -3311,6 +3664,8 @@ mod tests {
                 parts: vec![Part::Text {
                     text: format!("result for {id}"),
                     metadata: None,
+                    filename: None,
+                    media_type: None,
                 }],
                 metadata: None,
                 extensions: None,
@@ -3321,20 +3676,30 @@ mod tests {
                     parts: vec![Part::Text {
                         text: "hello".into(),
                         metadata: None,
+                        filename: None,
+                        media_type: None,
                     }],
                     message_id: "m1".into(),
                     context_id: context_id.map(String::from),
                     metadata: None,
+                    task_id: None,
+                    extensions: Vec::new(),
+                    reference_task_ids: Vec::new(),
                 },
                 Message {
                     role: "ROLE_AGENT".into(),
                     parts: vec![Part::Text {
                         text: "world".into(),
                         metadata: None,
+                        filename: None,
+                        media_type: None,
                     }],
                     message_id: "m2".into(),
                     context_id: context_id.map(String::from),
                     metadata: None,
+                    task_id: None,
+                    extensions: Vec::new(),
+                    reference_task_ids: Vec::new(),
                 },
             ]),
             metadata: None,
