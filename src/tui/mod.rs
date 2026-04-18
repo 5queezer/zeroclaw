@@ -165,7 +165,6 @@ impl App {
     }
 
     /// Start an App with a session and pre-populated messages (resume flow).
-    #[allow(dead_code)] // Task 13 will call this from boot dispatch
     pub(crate) fn with_resumed(session: SessionHandle, messages: Vec<ChatMessage>) -> Self {
         let mut app = Self::with_session(session);
         app.messages = messages;
@@ -355,11 +354,33 @@ impl App {
 /// Returns a `JoinHandle` that resolves when the TUI exits.
 pub fn spawn_tui(
     tx: mpsc::Sender<String>,
-    mut rx: mpsc::Receiver<crate::agent::TurnEvent>,
+    rx: mpsc::Receiver<crate::agent::TurnEvent>,
     session: Option<SessionHandle>,
 ) -> JoinHandle<()> {
     tokio::task::spawn_blocking(move || {
-        if let Err(e) = run_tui(tx, &mut rx, session) {
+        let mut app = match session {
+            Some(h) => App::with_session(h),
+            None => App::new(),
+        };
+        if let Err(e) = run_tui_with_app(tx, rx, &mut app) {
+            eprintln!("TUI error: {e}");
+        }
+    })
+}
+
+/// Spawn the TUI event loop with a pre-populated message history.
+///
+/// Used by the resume boot path so the user sees prior conversation
+/// on startup.
+pub fn spawn_tui_resumed(
+    tx: mpsc::Sender<String>,
+    rx: mpsc::Receiver<crate::agent::TurnEvent>,
+    session: SessionHandle,
+    messages: Vec<ChatMessage>,
+) -> JoinHandle<()> {
+    tokio::task::spawn_blocking(move || {
+        let mut app = App::with_resumed(session, messages);
+        if let Err(e) = run_tui_with_app(tx, rx, &mut app) {
             eprintln!("TUI error: {e}");
         }
     })
@@ -375,10 +396,10 @@ impl Drop for TerminalGuard {
     }
 }
 
-fn run_tui(
+fn run_tui_with_app(
     tx: mpsc::Sender<String>,
-    rx: &mut mpsc::Receiver<crate::agent::TurnEvent>,
-    session: Option<SessionHandle>,
+    mut rx: mpsc::Receiver<crate::agent::TurnEvent>,
+    app: &mut App,
 ) -> io::Result<()> {
     terminal::enable_raw_mode()?;
     let _guard = TerminalGuard; // ensures raw mode + alt screen are restored even on panic
@@ -387,18 +408,13 @@ fn run_tui(
     let backend = ratatui::backend::CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = match session {
-        Some(h) => App::with_session(h),
-        None => App::new(),
-    };
-
     loop {
         terminal.draw(|f| app.draw(f))?;
 
         // Poll for crossterm events with a 100ms timeout (tick rate)
         if event::poll(std::time::Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
-                if handle_key_event(&mut app, &tx, key) {
+                if handle_key_event(app, &tx, key) {
                     break;
                 }
             }
@@ -406,7 +422,7 @@ fn run_tui(
 
         // Drain incoming agent events (non-blocking).
         while let Ok(event) = rx.try_recv() {
-            crate::tui::events::handle_turn_event(&mut app, event);
+            crate::tui::events::handle_turn_event(app, event);
         }
 
         app.tick = app.tick.wrapping_add(1);

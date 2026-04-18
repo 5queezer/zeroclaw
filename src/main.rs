@@ -83,16 +83,42 @@ enum SessionBoot {
     ContinueOrCreate(String),
 }
 
+/// Convert resumed UI-side messages into provider-side chat history.
+///
+/// Only User and Assistant messages round-trip; System is dropped (the agent
+/// rebuilds its own system prompt from config) and ToolCall/ToolResult are
+/// dropped because [`hrafn::providers::ChatMessage`] has no dedicated
+/// tool-call/tool-result variants — it is a flat `{ role, content }` struct
+/// with `user()`/`assistant()`/`system()`/`tool()` constructors. Re-emitting
+/// past tool turns without their original `ToolCall` IDs would likely be
+/// rejected by providers that require matching IDs, so v1 keeps the
+/// "best-effort replay of prior turns" as plain user/assistant text.
+///
+/// TODO: if we want richer rehydration later, store provider-native message
+/// envelopes alongside the UI-facing form.
+#[cfg(feature = "tui")]
+fn to_provider_history(msgs: &[hrafn::tui::ChatMessage]) -> Vec<hrafn::providers::ChatMessage> {
+    use hrafn::providers::ChatMessage as ProviderMsg;
+    use hrafn::tui::ChatMessage as UiMsg;
+
+    msgs.iter()
+        .filter_map(|m| match m {
+            UiMsg::User { text } => Some(ProviderMsg::user(text.clone())),
+            UiMsg::Assistant { text } => Some(ProviderMsg::assistant(text.clone())),
+            UiMsg::System { .. } | UiMsg::ToolCall { .. } | UiMsg::ToolResult { .. } => None,
+        })
+        .collect()
+}
+
 /// Launch the interactive TUI when `hrafn` is invoked without arguments.
 #[cfg(feature = "tui")]
+#[allow(clippy::too_many_lines)]
 async fn run_interactive_tui(boot: Option<SessionBoot>) -> Result<()> {
     use hrafn::agent::TurnEvent;
-    use hrafn::tui::spawn_tui;
+    use hrafn::session::{SessionId, SessionStore};
+    use hrafn::tui::{ChatMessage, SessionHandle, spawn_tui, spawn_tui_resumed};
+    use std::sync::Arc;
     use tokio::sync::mpsc;
-
-    // TODO(plan Task 13): dispatch on `boot` to new/resume/continue-or-create.
-    // For now, retains pre-Task-13 behavior and ignores the parameter.
-    let _ = boot;
 
     if !std::io::stdout().is_terminal() {
         return print_no_command_help();
@@ -105,13 +131,78 @@ async fn run_interactive_tui(boot: Option<SessionBoot>) -> Result<()> {
     cfg.apply_env_overrides();
     hrafn::observability::runtime_trace::init_from_config(&cfg.observability, &cfg.workspace_dir);
 
+    let db_path = commands::sessions::default_db_path()?;
+    let store = Arc::new(SessionStore::open(&db_path)?);
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let provider = cfg
+        .default_provider
+        .clone()
+        .unwrap_or_else(|| "openrouter".to_string());
+    let model = cfg
+        .default_model
+        .clone()
+        .unwrap_or_else(|| "anthropic/claude-sonnet-4".to_string());
+
+    // Dispatch on the boot selector to produce a SessionHandle plus (optionally)
+    // the message list to rehydrate the TUI with.
+    let (handle, resumed_messages): (SessionHandle, Option<Vec<ChatMessage>>) = match boot {
+        Some(SessionBoot::Resume(Some(id_str))) => {
+            let id = SessionId::parse(&id_str).context("invalid session id")?;
+            let session = store.load(&id)?;
+            let h = SessionHandle::new(Arc::clone(&store), id);
+            let msgs = session.messages.into_iter().map(|m| m.body).collect();
+            (h, Some(msgs))
+        }
+        Some(SessionBoot::Resume(None)) => {
+            let Some(meta) = store.most_recent()? else {
+                eprintln!("no sessions to resume");
+                std::process::exit(2);
+            };
+            let session = store.load(&meta.id)?;
+            let h = SessionHandle::new(Arc::clone(&store), meta.id);
+            let msgs = session.messages.into_iter().map(|m| m.body).collect();
+            (h, Some(msgs))
+        }
+        Some(SessionBoot::ContinueOrCreate(title)) => {
+            if let Some(meta) = store.find_by_title_fuzzy(&title)? {
+                eprintln!("[resuming {}]", meta.id.as_str());
+                let session = store.load(&meta.id)?;
+                let h = SessionHandle::new(Arc::clone(&store), meta.id);
+                let msgs = session.messages.into_iter().map(|m| m.body).collect();
+                (h, Some(msgs))
+            } else {
+                let meta = store.create(&cwd, Some(&title), Some(&provider), Some(&model))?;
+                (SessionHandle::new(Arc::clone(&store), meta.id), None)
+            }
+        }
+        None => {
+            let meta = store.create(&cwd, None, Some(&provider), Some(&model))?;
+            (SessionHandle::new(Arc::clone(&store), meta.id), None)
+        }
+    };
+
+    // Build provider seed history if resuming.
+    let seed: Vec<hrafn::providers::ChatMessage> = resumed_messages
+        .as_ref()
+        .map(|msgs| to_provider_history(msgs))
+        .unwrap_or_default();
+
     let (user_tx, user_rx) = mpsc::channel::<String>(32);
     let (turn_event_tx, turn_event_rx) = mpsc::channel::<TurnEvent>(256);
 
-    let tui_handle = spawn_tui(user_tx, turn_event_rx, None);
+    let tui_handle = match resumed_messages {
+        Some(msgs) => spawn_tui_resumed(user_tx, turn_event_rx, handle, msgs),
+        None => spawn_tui(user_tx, turn_event_rx, Some(handle)),
+    };
 
     // Run the agent in TUI mode (blocks until user_rx closes).
-    let agent_result = Box::pin(hrafn::agent::run_tui(cfg, user_rx, turn_event_tx.clone())).await;
+    let agent_result = Box::pin(hrafn::agent::run_tui(
+        cfg,
+        user_rx,
+        turn_event_tx.clone(),
+        seed,
+    ))
+    .await;
 
     if let Err(ref e) = agent_result {
         // Surface the error inside the TUI as a synthetic assistant-style chunk,
@@ -3097,5 +3188,53 @@ mod tests {
             Commands::StdioRpc { .. } => {}
             other => panic!("expected StdioRpc command via acp alias, got {other:?}"),
         }
+    }
+
+    #[cfg(feature = "tui")]
+    #[test]
+    fn to_provider_history_filters_and_maps_roles() {
+        use hrafn::session::ToolStatus;
+        use hrafn::tui::ChatMessage as UiMsg;
+
+        let input = vec![
+            UiMsg::System {
+                text: "ignored system".into(),
+            },
+            UiMsg::User {
+                text: "hello".into(),
+            },
+            UiMsg::Assistant {
+                text: "hi there".into(),
+            },
+            UiMsg::ToolCall {
+                name: "echo".into(),
+                args: "{}".into(),
+                status: ToolStatus::Done(std::time::Duration::from_millis(1)),
+            },
+            UiMsg::ToolResult {
+                name: "echo".into(),
+                output: "done".into(),
+            },
+            UiMsg::User {
+                text: "again".into(),
+            },
+        ];
+
+        let out = to_provider_history(&input);
+
+        assert_eq!(out.len(), 3, "only User + Assistant should survive");
+        assert_eq!(out[0].role, "user");
+        assert_eq!(out[0].content, "hello");
+        assert_eq!(out[1].role, "assistant");
+        assert_eq!(out[1].content, "hi there");
+        assert_eq!(out[2].role, "user");
+        assert_eq!(out[2].content, "again");
+    }
+
+    #[cfg(feature = "tui")]
+    #[test]
+    fn to_provider_history_empty_input_yields_empty() {
+        let out = to_provider_history(&[]);
+        assert!(out.is_empty());
     }
 }

@@ -4939,6 +4939,10 @@ pub async fn process_message(
 /// provider, system prompt) but instead of reading from stdin it receives user
 /// messages from `user_rx` and streams [`TurnEvent`]s back through `event_tx`.
 ///
+/// `seed` is an optional slice of prior provider-side chat messages used to
+/// rehydrate the agent's conversation history (e.g. when resuming a saved
+/// session). Pass `Vec::new()` for a fresh session.
+///
 /// The caller is responsible for bridging `TurnEvent`s to whatever display
 /// layer it uses (e.g. the Ratatui TUI).
 #[cfg(feature = "tui")]
@@ -4946,6 +4950,7 @@ pub async fn run_tui(
     config: Config,
     mut user_rx: tokio::sync::mpsc::Receiver<String>,
     event_tx: tokio::sync::mpsc::Sender<crate::agent::TurnEvent>,
+    seed: Vec<ChatMessage>,
 ) -> Result<()> {
     use crate::agent::agent::AgentBuilder;
     use crate::agent::dispatcher::NativeToolDispatcher;
@@ -5167,6 +5172,11 @@ pub async fn run_tui(
         .autonomy_level(config.autonomy.level)
         .activated_tools(activated_handle_tui)
         .build()?;
+
+    if !seed.is_empty() {
+        agent.seed_history(&seed);
+        tracing::info!(count = seed.len(), "TUI: seeded history from prior session");
+    }
 
     tracing::info!("TUI: Agent ready, entering message loop");
 
