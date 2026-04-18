@@ -3906,6 +3906,19 @@ pub struct A2aConfig {
     /// Capability tags advertised in the agent card skills list.
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// Extended capability tags advertised only in the authenticated
+    /// `GET /extendedAgentCard` response.  The public agent card
+    /// (`/.well-known/agent-card.json`) continues to advertise only
+    /// `capabilities`.  Empty by default — when non-empty, the public
+    /// card advertises `capabilities.extendedAgentCard = true`.
+    #[serde(default)]
+    pub extended_skills: Vec<String>,
+    /// Default tenant string advertised on each `AgentInterface` entry in
+    /// the agent card.  Opaque — any caller may override per-request via
+    /// the `tenant` field on A2A messages.  When unset, no `tenant` field
+    /// appears on the interface entries.
+    #[serde(default)]
+    pub default_tenant: Option<String>,
     /// Telegram chat ID for A2A activity notifications (e.g. a group chat).
     /// When set, inbound A2A task results are also posted to this chat.
     #[serde(default)]
@@ -3934,6 +3947,8 @@ impl std::fmt::Debug for A2aConfig {
             .field("protocol_version", &self.protocol_version)
             .field("provider_url", &self.provider_url)
             .field("capabilities", &self.capabilities)
+            .field("extended_skills", &self.extended_skills)
+            .field("default_tenant", &self.default_tenant)
             .field("notify_chat_id", &self.notify_chat_id)
             .field("body_limit_bytes", &self.body_limit_bytes)
             .field("task_ttl_secs", &self.task_ttl_secs)
@@ -3954,6 +3969,8 @@ impl Default for A2aConfig {
             protocol_version: None,
             provider_url: None,
             capabilities: Vec::new(),
+            extended_skills: Vec::new(),
+            default_tenant: None,
             notify_chat_id: None,
             body_limit_bytes: default_a2a_body_limit(),
             task_ttl_secs: default_a2a_task_ttl(),

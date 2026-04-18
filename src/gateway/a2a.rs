@@ -273,6 +273,22 @@ pub struct Task {
     pub history: Option<Vec<Message>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
+    /// Opaque tenant scope for this task (A2A v1.0 multi-tenancy).
+    /// `None` or empty means the "default" tenant.  Tenant is metadata
+    /// only — Hrafn does NOT enforce tenant-based authorization here;
+    /// any authenticated caller may use any tenant string.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
+}
+
+/// Return true when a stored task's tenant matches the requested tenant.
+/// Both `None` and `Some("")` are treated as the "default" tenant, so
+/// tasks created via unscoped routes remain reachable through the
+/// unscoped routes (and vice versa) while being invisible to any
+/// non-default tenant scope.
+fn tenant_matches(stored: Option<&str>, requested: &str) -> bool {
+    let stored = stored.unwrap_or("");
+    stored == requested
 }
 
 /// A2A v1.0 task state enum — SCREAMING_SNAKE_CASE with `TASK_STATE_` prefix.
@@ -394,8 +410,35 @@ pub struct TaskArtifactUpdateEvent {
 
 // ── Agent card generation ────────────────────────────────────────
 
+/// Scope of an A2A agent card — public (unauthenticated) or extended
+/// (returned from the authenticated `/extendedAgentCard` endpoint, which
+/// additionally advertises skills listed in `A2aConfig.extended_skills`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CardScope {
+    /// Public card served at `/.well-known/agent-card.json`.
+    Public,
+    /// Extended card served at `/extendedAgentCard` — requires auth.
+    Extended,
+}
+
+/// Build a single `AgentSkill` JSON object from a capability tag.
+fn skill_from_tag(tag: &str) -> serde_json::Value {
+    json!({
+        "id": tag,
+        "name": tag,
+        "description": format!("{tag} capability"),
+        "tags": [tag],
+        "examples": []
+    })
+}
+
 /// Generate the A2A agent card from configuration.
-pub fn generate_agent_card(config: &crate::config::Config) -> serde_json::Value {
+///
+/// The public endpoint (`/.well-known/agent-card.json`) passes
+/// [`CardScope::Public`]; the authenticated `/extendedAgentCard` endpoint
+/// passes [`CardScope::Extended`] which appends any
+/// `A2aConfig.extended_skills` to the skill list.
+pub fn generate_agent_card(config: &crate::config::Config, scope: CardScope) -> serde_json::Value {
     let a2a = &config.a2a;
 
     let name = a2a
@@ -418,7 +461,9 @@ pub fn generate_agent_card(config: &crate::config::Config) -> serde_json::Value 
         .clone()
         .unwrap_or_else(|| format!("http://{}:{}", config.gateway.host, config.gateway.port));
 
-    let skills: Vec<serde_json::Value> = if a2a.capabilities.is_empty() {
+    // Public skills always appear.  Extended skills (if any) are appended
+    // only when the caller is authenticated (scope == Extended).
+    let mut skills: Vec<serde_json::Value> = if a2a.capabilities.is_empty() {
         vec![json!({
             "id": "general",
             "name": "General",
@@ -427,19 +472,11 @@ pub fn generate_agent_card(config: &crate::config::Config) -> serde_json::Value 
             "examples": ["Help me with a task"]
         })]
     } else {
-        a2a.capabilities
-            .iter()
-            .map(|c| {
-                json!({
-                    "id": c,
-                    "name": c,
-                    "description": format!("{c} capability"),
-                    "tags": [c],
-                    "examples": []
-                })
-            })
-            .collect()
+        a2a.capabilities.iter().map(|c| skill_from_tag(c)).collect()
     };
+    if scope == CardScope::Extended {
+        skills.extend(a2a.extended_skills.iter().map(|c| skill_from_tag(c)));
+    }
 
     let protocol_version = a2a
         .protocol_version
@@ -455,19 +492,39 @@ pub fn generate_agent_card(config: &crate::config::Config) -> serde_json::Value 
     let requires_auth =
         a2a.bearer_token.as_ref().is_some_and(|t| !t.is_empty()) || config.gateway.require_pairing;
 
+    // Build the (single) AgentInterface entry, optionally tagged with the
+    // configured default tenant.
+    let mut interface = json!({
+        "url": format!("{base_url}/"),
+        "protocol_binding": "JSONRPC",
+        "protocol_version": protocol_version
+    });
+    if let Some(ref tenant) = a2a.default_tenant {
+        interface["tenant"] = json!(tenant);
+    }
+
+    // Advertise the extended-card capability when any extended skill is
+    // configured — otherwise omit (treat as false per v1.0).
+    let has_extended = !a2a.extended_skills.is_empty();
+    let capabilities_obj = if has_extended {
+        json!({
+            "streaming": true,
+            "pushNotifications": false,
+            "extendedAgentCard": true
+        })
+    } else {
+        json!({
+            "streaming": true,
+            "pushNotifications": false
+        })
+    };
+
     let mut card = json!({
         "name": name,
         "description": description,
         "version": version,
-        "supported_interfaces": [{
-            "url": format!("{base_url}/"),
-            "protocol_binding": "JSONRPC",
-            "protocol_version": protocol_version
-        }],
-        "capabilities": {
-            "streaming": true,
-            "pushNotifications": false
-        },
+        "supported_interfaces": [interface],
+        "capabilities": capabilities_obj,
         "defaultInputModes": ["text/plain"],
         "defaultOutputModes": ["text/plain"],
         "skills": skills,
@@ -507,6 +564,36 @@ pub async fn handle_agent_card(State(state): State<AppState>) -> impl IntoRespon
         )
             .into_response(),
     }
+}
+
+/// `GET /extendedAgentCard` — authenticated discovery endpoint that
+/// returns the full agent card, including skills gated behind
+/// `A2aConfig.extended_skills`.  The public card at
+/// `/.well-known/agent-card.json` continues to advertise only the
+/// unauthenticated skill set.
+pub async fn handle_extended_agent_card(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    // Feature gate — same check as the public card.
+    if state.a2a_agent_card.is_none() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "A2A protocol not enabled"})),
+        )
+            .into_response();
+    }
+
+    // Authentication required for the extended card.
+    if let Err(resp) = require_a2a_auth(&state, &headers) {
+        return resp.into_response();
+    }
+
+    // Generate the extended card fresh from current config so that
+    // extended_skills changes take effect without a server restart.
+    let config = state.config.lock().clone();
+    let card = generate_agent_card(&config, CardScope::Extended);
+    (StatusCode::OK, Json(card)).into_response()
 }
 
 /// `POST /a2a` — authenticated JSON-RPC 2.0 task endpoint.
@@ -644,6 +731,15 @@ async fn handle_message_send(
         }
     };
 
+    // A2A v1.0 multi-tenancy: read the opaque tenant string from the top
+    // level of the params envelope.  Empty string == default tenant.
+    let tenant = req
+        .params
+        .get("tenant")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
     // Check for return_immediately flag in configuration.
     let return_immediately = req
         .params
@@ -691,6 +787,11 @@ async fn handle_message_send(
                 artifacts: None,
                 history: Some(vec![inbound_msg.clone()]),
                 metadata: None,
+                tenant: if tenant.is_empty() {
+                    None
+                } else {
+                    Some(tenant.clone())
+                },
             },
         );
     }
@@ -707,6 +808,14 @@ async fn handle_message_send(
         let ctx = context_id.clone();
         let bg_prompt = prompt_text.clone();
         let bg_session = format!("a2a-ctx-{}", &context_id);
+        // Preserve tenant scope on the background-finalized task so that
+        // tenant-scoped `tasks/get` lookups keep working after the agent
+        // pipeline completes asynchronously.
+        let bg_tenant = if tenant.is_empty() {
+            None
+        } else {
+            Some(tenant.clone())
+        };
         let telegram_notify = config.a2a.notify_chat_id.and_then(|chat_id| {
             config
                 .channels_config
@@ -765,6 +874,7 @@ async fn handle_message_send(
                         artifacts: Some(vec![artifact]),
                         history: Some(vec![inbound_msg]),
                         metadata: None,
+                        tenant: bg_tenant.clone(),
                     };
                     let mut tasks = bg_store.tasks.write().await;
                     if !tasks
@@ -799,6 +909,7 @@ async fn handle_message_send(
                         artifacts: None,
                         history: Some(vec![inbound_msg]),
                         metadata: None,
+                        tenant: bg_tenant.clone(),
                     };
                     let mut tasks = bg_store.tasks.write().await;
                     if !tasks
@@ -887,6 +998,11 @@ async fn handle_message_send(
                 artifacts: Some(vec![artifact]),
                 history: Some(vec![inbound_msg]),
                 metadata: None,
+                tenant: if tenant.is_empty() {
+                    None
+                } else {
+                    Some(tenant.clone())
+                },
             };
 
             // Only write the result if the task hasn't been canceled in the
@@ -941,6 +1057,11 @@ async fn handle_message_send(
                 artifacts: None,
                 history: Some(vec![inbound_msg]),
                 metadata: None,
+                tenant: if tenant.is_empty() {
+                    None
+                } else {
+                    Some(tenant.clone())
+                },
             };
 
             // Preserve Canceled state — don't overwrite with Failed.
@@ -989,9 +1110,18 @@ async fn handle_tasks_get(
         );
     }
 
+    // Tenant scope: a task created under tenant A must 404 when fetched
+    // under tenant B.  Empty tenant == default tenant; unscoped routes
+    // pass "" which only matches tasks with None/"" tenant.
+    let tenant = req
+        .params
+        .get("tenant")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
     let tasks = task_store.tasks.read().await;
     match tasks.get(task_id) {
-        Some(task) => (
+        Some(task) if tenant_matches(task.tenant.as_deref(), tenant) => (
             StatusCode::OK,
             Json(json!({
                 "jsonrpc": "2.0",
@@ -999,7 +1129,7 @@ async fn handle_tasks_get(
                 "result": task
             })),
         ),
-        None => (
+        _ => (
             StatusCode::OK,
             Json(rpc_error(
                 req.id,
@@ -1029,9 +1159,18 @@ async fn handle_tasks_cancel(
         );
     }
 
+    // Tenant scope: tasks created under tenant A must not be cancelable
+    // from tenant B — the result is TASK_NOT_FOUND.
+    let tenant = req
+        .params
+        .get("tenant")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
     let result = {
         let mut tasks = task_store.tasks.write().await;
         match tasks.get_mut(task_id) {
+            Some(task) if !tenant_matches(task.tenant.as_deref(), tenant) => None,
             Some(task) => {
                 if task.status.state.is_terminal() {
                     return (
@@ -1131,6 +1270,15 @@ async fn handle_tasks_list(
         .and_then(|v| v.as_str())
         .map(String::from);
 
+    // Tenant scope: the unscoped `tasks/list` route only sees
+    // default-tenant tasks; a tenant-scoped route sees only that tenant's.
+    let tenant = req
+        .params
+        .get("tenant")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
     let tasks = task_store.tasks.read().await;
 
     // Collect and sort by task ID for stable ordering
@@ -1141,6 +1289,9 @@ async fn handle_tasks_list(
     let filtered: Vec<&Task> = sorted
         .into_iter()
         .filter(|t| {
+            if !tenant_matches(t.tenant.as_deref(), &tenant) {
+                return false;
+            }
             if let Some(ref ctx) = context_id_filter {
                 if t.context_id.as_deref() != Some(ctx) {
                     return false;
@@ -1254,7 +1405,18 @@ async fn handle_tasks_get_by_context(
         );
     }
 
-    let tasks = task_store.tasks_by_context(context_id).await;
+    let tenant = req
+        .params
+        .get("tenant")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let tasks: Vec<Task> = task_store
+        .tasks_by_context(context_id)
+        .await
+        .into_iter()
+        .filter(|t| tenant_matches(t.tenant.as_deref(), tenant))
+        .collect();
     (
         StatusCode::OK,
         Json(json!({
@@ -1311,12 +1473,32 @@ fn unwrap_rpc_to_rest(
     )
 }
 
-/// `POST /message:send` — v1.0 REST binding for SendMessage.
-pub async fn handle_message_send_rest(
-    State(state): State<AppState>,
+/// Inject a route-level `tenant` string into a params JSON value, taking
+/// precedence over any caller-supplied `tenant` field.  Returns the
+/// potentially-mutated value ready to hand off to the inner RPC handler.
+fn inject_tenant(mut params: serde_json::Value, tenant: &str) -> serde_json::Value {
+    if tenant.is_empty() {
+        return params;
+    }
+    if !params.is_object() {
+        params = json!({});
+    }
+    if let Some(obj) = params.as_object_mut() {
+        obj.insert("tenant".to_string(), json!(tenant));
+    }
+    params
+}
+
+/// Shared body for the `POST /message:send` and
+/// `POST /{tenant}/message:send` handlers.  The `tenant` argument is
+/// taken from the URL path; when non-empty it overrides any `tenant`
+/// field in the JSON body.
+async fn handle_message_send_rest_inner(
+    state: AppState,
     headers: HeaderMap,
-    Json(params): Json<serde_json::Value>,
-) -> impl IntoResponse {
+    tenant: String,
+    params: serde_json::Value,
+) -> axum::response::Response {
     let (Some(_card), Some(task_store)) = (&state.a2a_agent_card, &state.a2a_task_store) else {
         return (
             StatusCode::NOT_FOUND,
@@ -1333,18 +1515,39 @@ pub async fn handle_message_send_rest(
         jsonrpc: "2.0".into(),
         id: json!(uuid::Uuid::new_v4().to_string()),
         method: "message/send".into(),
-        params,
+        params: inject_tenant(params, &tenant),
     };
     let (status, Json(body)) = Box::pin(handle_message_send(&state, task_store, req)).await;
     unwrap_rpc_to_rest(status, body).into_response()
 }
 
-/// `GET /tasks/{id}` — v1.0 REST binding for GetTask.
-pub async fn handle_tasks_get_rest(
+/// `POST /message:send` — v1.0 REST binding for SendMessage.
+pub async fn handle_message_send_rest(
     State(state): State<AppState>,
     headers: HeaderMap,
-    axum::extract::Path(task_id): axum::extract::Path<String>,
+    Json(params): Json<serde_json::Value>,
 ) -> impl IntoResponse {
+    handle_message_send_rest_inner(state, headers, String::new(), params).await
+}
+
+/// `POST /{tenant}/message:send` — tenant-scoped v1.0 REST binding.
+pub async fn handle_message_send_rest_scoped(
+    State(state): State<AppState>,
+    axum::extract::Path(tenant): axum::extract::Path<String>,
+    headers: HeaderMap,
+    Json(params): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    handle_message_send_rest_inner(state, headers, tenant, params).await
+}
+
+/// Shared body for the `GET /tasks/{id}` and
+/// `GET /{tenant}/tasks/{id}` handlers.
+async fn handle_tasks_get_rest_inner(
+    state: AppState,
+    headers: HeaderMap,
+    tenant: String,
+    task_id: String,
+) -> axum::response::Response {
     let (Some(_card), Some(task_store)) = (&state.a2a_agent_card, &state.a2a_task_store) else {
         return (
             StatusCode::NOT_FOUND,
@@ -1361,20 +1564,37 @@ pub async fn handle_tasks_get_rest(
         jsonrpc: "2.0".into(),
         id: json!(uuid::Uuid::new_v4().to_string()),
         method: "tasks/get".into(),
-        params: json!({"id": task_id}),
+        params: inject_tenant(json!({"id": task_id}), &tenant),
     };
     let (status, Json(body)) = handle_tasks_get(task_store, req).await;
     unwrap_rpc_to_rest(status, body).into_response()
 }
 
-/// `POST /tasks/{id}:cancel` — v1.0 REST binding for CancelTask.
-/// The route captures the full `{id}:cancel` segment; the `:cancel` suffix
-/// is stripped at runtime because axum does not support `{param}:suffix` patterns.
-pub async fn handle_tasks_cancel_rest(
+/// `GET /tasks/{id}` — v1.0 REST binding for GetTask.
+pub async fn handle_tasks_get_rest(
     State(state): State<AppState>,
     headers: HeaderMap,
-    axum::extract::Path(raw): axum::extract::Path<String>,
+    axum::extract::Path(task_id): axum::extract::Path<String>,
 ) -> impl IntoResponse {
+    handle_tasks_get_rest_inner(state, headers, String::new(), task_id).await
+}
+
+/// `GET /{tenant}/tasks/{id}` — tenant-scoped v1.0 REST binding.
+pub async fn handle_tasks_get_rest_scoped(
+    State(state): State<AppState>,
+    axum::extract::Path((tenant, task_id)): axum::extract::Path<(String, String)>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    handle_tasks_get_rest_inner(state, headers, tenant, task_id).await
+}
+
+/// Shared body for `POST /tasks/{id}:cancel` and the tenant-scoped variant.
+async fn handle_tasks_cancel_rest_inner(
+    state: AppState,
+    headers: HeaderMap,
+    tenant: String,
+    raw: String,
+) -> axum::response::Response {
     // A2A spec uses gRPC-style `/tasks/{id}:cancel` but axum captures
     // the full segment including the `:cancel` suffix.
     let task_id = raw.strip_suffix(":cancel").unwrap_or(&raw).to_string();
@@ -1394,10 +1614,30 @@ pub async fn handle_tasks_cancel_rest(
         jsonrpc: "2.0".into(),
         id: json!(uuid::Uuid::new_v4().to_string()),
         method: "tasks/cancel".into(),
-        params: json!({"id": task_id}),
+        params: inject_tenant(json!({"id": task_id}), &tenant),
     };
     let (status, Json(body)) = handle_tasks_cancel(task_store, req).await;
     unwrap_rpc_to_rest(status, body).into_response()
+}
+
+/// `POST /tasks/{id}:cancel` — v1.0 REST binding for CancelTask.
+/// The route captures the full `{id}:cancel` segment; the `:cancel` suffix
+/// is stripped at runtime because axum does not support `{param}:suffix` patterns.
+pub async fn handle_tasks_cancel_rest(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(raw): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    handle_tasks_cancel_rest_inner(state, headers, String::new(), raw).await
+}
+
+/// `POST /{tenant}/tasks/{id}:cancel` — tenant-scoped cancel handler.
+pub async fn handle_tasks_cancel_rest_scoped(
+    State(state): State<AppState>,
+    axum::extract::Path((tenant, raw)): axum::extract::Path<(String, String)>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    handle_tasks_cancel_rest_inner(state, headers, tenant, raw).await
 }
 
 /// Query parameters for `GET /tasks`.
@@ -1412,12 +1652,13 @@ pub struct ListTasksQuery {
     pub status_timestamp_after: Option<String>,
 }
 
-/// `GET /tasks` — v1.0 REST binding for ListTasks.
-pub async fn handle_tasks_list_rest(
-    State(state): State<AppState>,
+/// Shared body for `GET /tasks` and the tenant-scoped variant.
+async fn handle_tasks_list_rest_inner(
+    state: AppState,
     headers: HeaderMap,
-    axum::extract::Query(query): axum::extract::Query<ListTasksQuery>,
-) -> impl IntoResponse {
+    tenant: String,
+    query: ListTasksQuery,
+) -> axum::response::Response {
     let (Some(_card), Some(task_store)) = (&state.a2a_agent_card, &state.a2a_task_store) else {
         return (
             StatusCode::NOT_FOUND,
@@ -1457,10 +1698,29 @@ pub async fn handle_tasks_list_rest(
         jsonrpc: "2.0".into(),
         id: json!(uuid::Uuid::new_v4().to_string()),
         method: "tasks/list".into(),
-        params,
+        params: inject_tenant(params, &tenant),
     };
     let (status, Json(body)) = handle_tasks_list(task_store, req).await;
     unwrap_rpc_to_rest(status, body).into_response()
+}
+
+/// `GET /tasks` — v1.0 REST binding for ListTasks.
+pub async fn handle_tasks_list_rest(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<ListTasksQuery>,
+) -> impl IntoResponse {
+    handle_tasks_list_rest_inner(state, headers, String::new(), query).await
+}
+
+/// `GET /{tenant}/tasks` — tenant-scoped v1.0 REST binding.
+pub async fn handle_tasks_list_rest_scoped(
+    State(state): State<AppState>,
+    axum::extract::Path(tenant): axum::extract::Path<String>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<ListTasksQuery>,
+) -> impl IntoResponse {
+    handle_tasks_list_rest_inner(state, headers, tenant, query).await
 }
 
 /// `GET /tasks/by-context/{context_id}` — v1.0 REST binding for tasks by context.
@@ -1492,6 +1752,21 @@ pub async fn handle_tasks_by_context_rest(
 }
 
 // ── v1.0 SSE streaming endpoint ──────────────────────────────────
+
+/// `POST /{tenant}/message:stream` — tenant-scoped streaming handler.
+///
+/// Injects the path-captured tenant into the JSON params envelope (overriding
+/// any caller-supplied `tenant`) and then delegates to
+/// [`handle_message_stream_rest`].
+pub async fn handle_message_stream_rest_scoped(
+    state: State<AppState>,
+    axum::extract::Path(tenant): axum::extract::Path<String>,
+    headers: HeaderMap,
+    Json(params): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let params = inject_tenant(params, &tenant);
+    handle_message_stream_rest(state, headers, Json(params)).await
+}
 
 /// `POST /message:stream` — v1.0 REST binding for `SendStreamingMessage`.
 ///
@@ -1529,6 +1804,18 @@ pub async fn handle_message_stream_rest(
         }
     };
 
+    // A2A v1.0 multi-tenancy: opaque tenant string from params envelope.
+    let tenant = params
+        .get("tenant")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let task_tenant = if tenant.is_empty() {
+        None
+    } else {
+        Some(tenant.clone())
+    };
+
     let task_id = uuid::Uuid::new_v4().to_string();
     let task_store = Arc::clone(task_store);
 
@@ -1558,6 +1845,7 @@ pub async fn handle_message_stream_rest(
                 artifacts: None,
                 history: Some(vec![inbound_msg]),
                 metadata: None,
+                tenant: task_tenant.clone(),
             },
         );
     }
@@ -2180,7 +2468,7 @@ mod tests {
             config.a2a.bearer_token = Some(token.to_string());
         }
 
-        let card = generate_agent_card(&config);
+        let card = generate_agent_card(&config, CardScope::Public);
 
         AppState {
             config: Arc::new(Mutex::new(config)),
@@ -2253,7 +2541,7 @@ mod tests {
             ..Default::default()
         };
 
-        let card = generate_agent_card(&config);
+        let card = generate_agent_card(&config, CardScope::Public);
         assert_eq!(card["name"], "ZeroClaw Agent");
         // v1.0: supported_interfaces replaces top-level url
         let ifaces = card["supported_interfaces"].as_array().unwrap();
@@ -2293,7 +2581,7 @@ mod tests {
             ..Default::default()
         };
 
-        let card = generate_agent_card(&config);
+        let card = generate_agent_card(&config, CardScope::Public);
         assert_eq!(card["name"], "my-agent");
         assert_eq!(card["description"], "My custom agent");
         // v1.0: URL is in supported_interfaces
@@ -2403,6 +2691,7 @@ mod tests {
                     artifacts: None,
                     history: None,
                     metadata: None,
+                    tenant: None,
                 },
             );
         }
@@ -2467,6 +2756,112 @@ mod tests {
         state.a2a_agent_card = None;
         let resp = handle_agent_card(State(state)).await.into_response();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── Extended agent card tests ────────────────────────────
+
+    fn state_with_extended_skills(bearer: Option<&str>, extended: &[&str]) -> AppState {
+        let state = a2a_test_state(bearer, false, &[]);
+        {
+            let mut cfg = state.config.lock();
+            cfg.a2a.extended_skills = extended.iter().map(|s| (*s).to_string()).collect();
+        }
+        state
+    }
+
+    #[tokio::test]
+    async fn extended_agent_card_requires_auth_when_token_configured() {
+        let state = state_with_extended_skills(Some("secret"), &["admin", "billing"]);
+        let resp = handle_extended_agent_card(State(state), HeaderMap::new())
+            .await
+            .into_response();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn extended_agent_card_returns_extended_skills_when_authenticated() {
+        let state = state_with_extended_skills(Some("secret"), &["admin", "billing"]);
+        let resp = handle_extended_agent_card(State(state), bearer_header("secret"))
+            .await
+            .into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = response_json(resp).await;
+        let skill_ids: Vec<&str> = body["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|s| s["id"].as_str())
+            .collect();
+        assert!(skill_ids.contains(&"admin"));
+        assert!(skill_ids.contains(&"billing"));
+    }
+
+    #[tokio::test]
+    async fn public_card_omits_extended_skills() {
+        let state = state_with_extended_skills(Some("secret"), &["admin", "billing"]);
+        // Re-generate the cached public card from updated config so the
+        // test fixture reflects the post-init extended_skills value.
+        {
+            let config = state.config.lock().clone();
+            let card = generate_agent_card(&config, CardScope::Public);
+            // Mutate via raw pointer isn't safe — rebuild the AppState with
+            // a fresh Arc.  Easier: just call generate_agent_card directly
+            // below.
+            let _ = card;
+        }
+        let config = state.config.lock().clone();
+        let public = generate_agent_card(&config, CardScope::Public);
+        let skill_ids: Vec<&str> = public["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|s| s["id"].as_str())
+            .collect();
+        assert!(!skill_ids.contains(&"admin"));
+        assert!(!skill_ids.contains(&"billing"));
+    }
+
+    #[test]
+    fn public_card_advertises_extended_capability_when_extended_skills_present() {
+        let config = crate::config::Config {
+            a2a: crate::config::A2aConfig {
+                enabled: true,
+                extended_skills: vec!["admin".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let card = generate_agent_card(&config, CardScope::Public);
+        assert_eq!(card["capabilities"]["extendedAgentCard"], true);
+    }
+
+    #[test]
+    fn public_card_omits_extended_capability_when_no_extended_skills() {
+        let config = crate::config::Config {
+            a2a: crate::config::A2aConfig {
+                enabled: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let card = generate_agent_card(&config, CardScope::Public);
+        // Field is absent when no extended skills are configured.
+        assert!(card["capabilities"].get("extendedAgentCard").is_none());
+    }
+
+    #[test]
+    fn agent_card_includes_default_tenant_on_interface() {
+        let config = crate::config::Config {
+            a2a: crate::config::A2aConfig {
+                enabled: true,
+                default_tenant: Some("acme".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let card = generate_agent_card(&config, CardScope::Public);
+        let ifaces = card["supported_interfaces"].as_array().unwrap();
+        assert_eq!(ifaces[0]["tenant"], "acme");
     }
 
     #[tokio::test]
@@ -2631,6 +3026,7 @@ mod tests {
                     }]),
                     history: None,
                     metadata: None,
+                    tenant: None,
                 },
             );
         }
@@ -2685,6 +3081,7 @@ mod tests {
                     artifacts: None,
                     history: None,
                     metadata: None,
+                    tenant: None,
                 },
             );
         }
@@ -2734,6 +3131,7 @@ mod tests {
                     artifacts: None,
                     history: None,
                     metadata: None,
+                    tenant: None,
                 },
             );
         }
@@ -2780,6 +3178,7 @@ mod tests {
                     artifacts: None,
                     history: None,
                     metadata: None,
+                    tenant: None,
                 },
             );
         }
@@ -2814,6 +3213,7 @@ mod tests {
                     artifacts: None,
                     history: None,
                     metadata: None,
+                    tenant: None,
                 },
             );
         }
@@ -2851,6 +3251,7 @@ mod tests {
                         artifacts: None,
                         history: None,
                         metadata: None,
+                        tenant: None,
                     },
                 );
             }
@@ -3011,6 +3412,7 @@ mod tests {
                         artifacts: None,
                         history: None,
                         metadata: None,
+                        tenant: None,
                     },
                 );
             }
@@ -3053,6 +3455,7 @@ mod tests {
                         artifacts: None,
                         history: None,
                         metadata: None,
+                        tenant: None,
                     },
                 );
             }
@@ -3200,6 +3603,7 @@ mod tests {
                 },
             ]),
             metadata: None,
+            tenant: None,
         }
     }
 
@@ -3434,6 +3838,7 @@ mod tests {
                     artifacts: None,
                     history: None,
                     metadata: None,
+                    tenant: None,
                 },
             );
             tasks.insert(
@@ -3449,6 +3854,7 @@ mod tests {
                     artifacts: None,
                     history: None,
                     metadata: None,
+                    tenant: None,
                 },
             );
             tasks.insert(
@@ -3464,6 +3870,7 @@ mod tests {
                     artifacts: None,
                     history: None,
                     metadata: None,
+                    tenant: None,
                 },
             );
         }
@@ -3500,6 +3907,7 @@ mod tests {
                         artifacts: None,
                         history: None,
                         metadata: None,
+                        tenant: None,
                     },
                 );
             }
@@ -3553,6 +3961,7 @@ mod tests {
                 artifacts: None,
                 history: None,
                 metadata: None,
+                tenant: None,
             },
         );
     }
@@ -3711,6 +4120,7 @@ mod tests {
                     artifacts: None,
                     history: None,
                     metadata: None,
+                    tenant: None,
                 },
             );
         }
@@ -3734,5 +4144,184 @@ mod tests {
             !idx.contains_key("ctx-1"),
             "empty context should be removed from index"
         );
+    }
+
+    // ── Tenant (multi-tenancy v1.0) tests ────────────────────
+
+    /// Insert a task with a specific tenant tag directly into the store.
+    async fn insert_tenant_task(store: &TaskStore, id: &str, tenant: Option<&str>) {
+        let mut tasks = store.tasks.write().await;
+        tasks.insert(
+            id.to_string(),
+            Task {
+                id: id.to_string(),
+                status: TaskStatus {
+                    state: A2aTaskState::Working,
+                    message: None,
+                    timestamp: None,
+                },
+                context_id: None,
+                artifacts: None,
+                history: None,
+                metadata: None,
+                tenant: tenant.map(|s| s.to_string()),
+            },
+        );
+    }
+
+    #[tokio::test]
+    async fn tasks_get_scoped_isolates_tenants() {
+        let store = Arc::new(TaskStore::new());
+        insert_tenant_task(&store, "t-a", Some("acme")).await;
+
+        // Tenant "acme" can see its task.
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: json!(1),
+            method: "tasks/get".into(),
+            params: json!({"id": "t-a", "tenant": "acme"}),
+        };
+        let (_, Json(body)) = handle_tasks_get(&store, req).await;
+        assert_eq!(body["result"]["id"], "t-a");
+
+        // Tenant "beta" does not.
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: json!(1),
+            method: "tasks/get".into(),
+            params: json!({"id": "t-a", "tenant": "beta"}),
+        };
+        let (_, Json(body)) = handle_tasks_get(&store, req).await;
+        assert_eq!(body["error"]["code"], -32001);
+
+        // Unscoped (default tenant) also does not see acme's task.
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: json!(1),
+            method: "tasks/get".into(),
+            params: json!({"id": "t-a"}),
+        };
+        let (_, Json(body)) = handle_tasks_get(&store, req).await;
+        assert_eq!(body["error"]["code"], -32001);
+    }
+
+    #[tokio::test]
+    async fn tasks_list_filters_by_tenant() {
+        let store = Arc::new(TaskStore::new());
+        insert_tenant_task(&store, "t-default", None).await;
+        insert_tenant_task(&store, "t-acme", Some("acme")).await;
+        insert_tenant_task(&store, "t-beta", Some("beta")).await;
+
+        // Unscoped list returns only the default-tenant task.
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: json!(1),
+            method: "tasks/list".into(),
+            params: json!({}),
+        };
+        let (_, Json(body)) = handle_tasks_list(&store, req).await;
+        let ids: Vec<&str> = body["result"]["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["t-default"]);
+
+        // Scoped list returns only the matching tenant's task.
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: json!(1),
+            method: "tasks/list".into(),
+            params: json!({"tenant": "acme"}),
+        };
+        let (_, Json(body)) = handle_tasks_list(&store, req).await;
+        let ids: Vec<&str> = body["result"]["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["t-acme"]);
+    }
+
+    #[tokio::test]
+    async fn tasks_cancel_scoped_rejects_wrong_tenant() {
+        let store = Arc::new(TaskStore::new());
+        insert_tenant_task(&store, "t-a", Some("acme")).await;
+
+        // Wrong tenant should see TASK_NOT_FOUND.
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: json!(1),
+            method: "tasks/cancel".into(),
+            params: json!({"id": "t-a", "tenant": "beta"}),
+        };
+        let (_, Json(body)) = handle_tasks_cancel(&store, req).await;
+        assert_eq!(body["error"]["code"], -32001);
+
+        // Correct tenant succeeds.
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: json!(1),
+            method: "tasks/cancel".into(),
+            params: json!({"id": "t-a", "tenant": "acme"}),
+        };
+        let (_, Json(body)) = handle_tasks_cancel(&store, req).await;
+        assert_eq!(body["result"]["status"]["state"], "TASK_STATE_CANCELED");
+    }
+
+    #[test]
+    fn inject_tenant_overrides_caller_value() {
+        // Route tenant wins over body tenant (prevents spoofing from inside
+        // the JSON body when the client hits a scoped route).
+        let params = json!({"id": "abc", "tenant": "attacker"});
+        let out = inject_tenant(params, "acme");
+        assert_eq!(out["tenant"], "acme");
+    }
+
+    #[test]
+    fn inject_tenant_empty_preserves_caller_value() {
+        // Unscoped route passes "" — body tenant must be preserved so that
+        // RPC clients can still pass tenant in the envelope.
+        let params = json!({"id": "abc", "tenant": "acme"});
+        let out = inject_tenant(params, "");
+        assert_eq!(out["tenant"], "acme");
+    }
+
+    #[test]
+    fn tenant_matches_default_semantics() {
+        // None and "" both represent the default tenant.
+        assert!(tenant_matches(None, ""));
+        assert!(tenant_matches(Some(""), ""));
+        assert!(tenant_matches(Some("acme"), "acme"));
+        assert!(!tenant_matches(Some("acme"), ""));
+        assert!(!tenant_matches(None, "acme"));
+        assert!(!tenant_matches(Some("acme"), "beta"));
+    }
+
+    #[tokio::test]
+    async fn message_send_records_tenant_from_params() {
+        let state = a2a_test_state(None, false, &[]);
+        let task_store = state.a2a_task_store.clone().unwrap();
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: json!(1),
+            method: "message/send".into(),
+            params: json!({
+                "message": {
+                    "role": "ROLE_USER",
+                    "parts": [{"text": "hi"}],
+                    "messageId": "m1"
+                },
+                "tenant": "acme"
+            }),
+        };
+        // Fire-and-forget — the MockProvider will error; we only care that
+        // the task is recorded with the tenant before processing starts.
+        let _ = Box::pin(handle_message_send(&state, &task_store, req)).await;
+        let tasks = task_store.tasks.read().await;
+        let any_acme = tasks.values().any(|t| t.tenant.as_deref() == Some("acme"));
+        assert!(any_acme, "a task should have been stored with tenant=acme");
     }
 }

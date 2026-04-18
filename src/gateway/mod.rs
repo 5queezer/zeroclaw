@@ -923,7 +923,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
             );
         }
 
-        let card = a2a::generate_agent_card(&config);
+        let card = a2a::generate_agent_card(&config, a2a::CardScope::Public);
         tracing::info!("A2A protocol enabled — agent card generated");
         let task_store = Arc::new(a2a::TaskStore::new());
 
@@ -1025,6 +1025,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         Some(
             Router::new()
                 .route("/.well-known/agent-card.json", get(a2a::handle_agent_card))
+                .route("/extendedAgentCard", get(a2a::handle_extended_agent_card))
                 .route("/message:send", post(a2a::handle_message_send_rest))
                 .route("/message:stream", post(a2a::handle_message_stream_rest))
                 .route("/tasks", get(a2a::handle_tasks_list_rest))
@@ -1035,6 +1036,26 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
                 .route(
                     "/tasks/by-context/{context_id}",
                     get(a2a::handle_tasks_by_context_rest),
+                )
+                // A2A v1.0 multi-tenancy: tenant-scoped route mirrors of
+                // the routes above.  The path-captured `{tenant}` is
+                // injected into the JSON-RPC params envelope, overriding
+                // any caller-supplied `tenant` field.  Tenant is opaque
+                // metadata — no authorization is enforced beyond the
+                // existing bearer/pairing checks.
+                .route(
+                    "/{tenant}/message:send",
+                    post(a2a::handle_message_send_rest_scoped),
+                )
+                .route(
+                    "/{tenant}/message:stream",
+                    post(a2a::handle_message_stream_rest_scoped),
+                )
+                .route("/{tenant}/tasks", get(a2a::handle_tasks_list_rest_scoped))
+                .route(
+                    "/{tenant}/tasks/{id}",
+                    get(a2a::handle_tasks_get_rest_scoped)
+                        .post(a2a::handle_tasks_cancel_rest_scoped),
                 )
                 .route("/a2a", post(a2a::handle_a2a_rpc))
                 .layer(DefaultBodyLimit::max(config.a2a.body_limit_bytes)),
