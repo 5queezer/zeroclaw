@@ -1757,7 +1757,7 @@ pub fn handle_command(command: crate::SkillCommands, config: &crate::config::Con
             for (name, result) in &results {
                 match result {
                     integrity::VerifyResult::Ok => {
-                        println!("  {} {}", console::style("✓").green().bold(), name,);
+                        println!("  {} {}", console::style("✓").green().bold(), name);
                     }
                     integrity::VerifyResult::NotLocked => {
                         println!(

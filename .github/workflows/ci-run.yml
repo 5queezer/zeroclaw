@@ -44,7 +44,9 @@ jobs:
   bench-compile:
     name: Verify Benchmarks Compile
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # This job routinely finishes just under 15 minutes on cold PR runners;
+    # leave cleanup/logging headroom so successful compiles are not cancelled.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable

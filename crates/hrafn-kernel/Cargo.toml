@@ -1,0 +1,13 @@
+[package]
+name = "hrafn-kernel"
+version = "0.1.0"
+edition = "2024"
+authors = ["Christian Pojoni", "5queezer"]
+license = "MIT OR Apache-2.0"
+description = "Minimal Hrafn microkernel host seed"
+repository = "https://github.com/5queezer/hrafn"
+rust-version = "1.87"
+
+[dependencies]
+hrafn-sdk = { path = "../hrafn-sdk", version = "0.1.0", default-features = false }
+thiserror = "2.0"

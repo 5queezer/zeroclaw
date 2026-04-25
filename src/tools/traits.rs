@@ -1,21 +1,6 @@
 use async_trait::async_trait;
+pub use hrafn_sdk::{ToolResult, ToolSpec};
 use serde::{Deserialize, Serialize};
-
-/// Result of a tool execution
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolResult {
-    pub success: bool,
-    pub output: String,
-    pub error: Option<String>,
-}
-
-/// Description of a tool for the LLM
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolSpec {
-    pub name: String,
-    pub description: String,
-    pub parameters: serde_json::Value,
-}
 
 /// Lightweight stub for tiered context injection — name + short description only.
 #[derive(Debug, Clone, Serialize, Deserialize)]

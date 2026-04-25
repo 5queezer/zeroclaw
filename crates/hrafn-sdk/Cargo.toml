@@ -1,0 +1,20 @@
+[package]
+name = "hrafn-sdk"
+version = "0.1.0"
+edition = "2024"
+authors = ["Christian Pojoni", "5queezer"]
+license = "MIT OR Apache-2.0"
+description = "Stable SDK types for Hrafn microkernel plugins"
+repository = "https://github.com/5queezer/hrafn"
+rust-version = "1.87"
+
+[dependencies]
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"], optional = true }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"], optional = true }
+thiserror = { version = "2.0", default-features = false, optional = true }
+
+[features]
+default = ["std", "serde"]
+std = ["serde?/std", "serde_json?/std"]
+serde = ["dep:serde", "dep:serde_json"]
+error = ["dep:thiserror"]

@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
-use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS, Transport};
+use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS, TlsConfiguration, Transport};
 use tracing::{info, warn};
 
 use crate::config::MqttConfig;
@@ -37,10 +37,10 @@ pub async fn run_mqtt_sop_listener(
         mqtt_options.set_credentials(user, pass);
     }
 
-    // Configure TLS transport when mqtts:// scheme is used
+    // Configure TLS transport when mqtts:// scheme is used.
     if config.use_tls {
-        mqtt_options.set_transport(Transport::tls_with_default_config());
-        info!("MQTT SOP listener: TLS transport enabled");
+        mqtt_options.set_transport(Transport::tls_with_config(TlsConfiguration::Native));
+        info!("MQTT SOP listener: native TLS transport enabled");
     }
 
     let (client, mut eventloop) = AsyncClient::new(mqtt_options, 64);

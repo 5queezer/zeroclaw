@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/robot-kit", "crates/aardvark-sys", "apps/tauri"]
+members = [".", "crates/hrafn-sdk", "crates/hrafn-kernel", "crates/robot-kit", "crates/aardvark-sys", "apps/tauri"]
 resolver = "2"
 
 [package]
@@ -35,11 +35,15 @@ name = "hrafn-esp32"
 path = "src/bin/esp32.rs"
 required-features = ["target-esp32"]
 
+
 [lib]
 name = "hrafn"
 path = "src/lib.rs"
 
 [dependencies]
+# Microkernel SDK boundary
+hrafn-sdk = { path = "crates/hrafn-sdk", version = "0.1.0", optional = true }
+
 # CLI - minimal and fast (desktop only)
 clap = { version = "4.5", features = ["derive"], optional = true }
 clap_complete = { version = "4.5", optional = true }
@@ -93,8 +97,10 @@ nanohtml2text = { version = "0.2", optional = true }
 # Optional Rust-native browser automation backend
 fantoccini = { version = "0.22.1", optional = true, default-features = false, features = ["rustls-tls"] }
 
-# MQTT client for IoT / SOP event fan-in
-rumqttc = { version = "0.25", optional = true }
+# MQTT client for IoT / SOP event fan-in.
+# Use native TLS instead of rumqttc's default rustls stack until rumqttc
+# updates its rustls-webpki 0.102 dependency past RUSTSEC-2026-0098/0099/0104.
+rumqttc = { version = "0.25", optional = true, default-features = false, features = ["use-native-tls"] }
 
 # Tarball extraction for binary updates
 flate2 = { version = "1", optional = true }
@@ -257,7 +263,12 @@ landlock = { version = "0.4", optional = true }
 libc = "0.2"
 
 [features]
-default = [
+default = ["full"]
+# Minimal microkernel seed: compiles only the SDK-backed kernel binary without desktop integrations.
+kernel = ["dep:hrafn-sdk"]
+# Explicit full distribution profile. This preserves the historical default feature set while
+# making the monolith profile named and separable from the future microkernel default.
+full = [
     "desktop",
     "tui",
     "observability-prometheus",
@@ -274,6 +285,7 @@ default = [
 # Desktop feature: includes all desktop-only dependencies.
 # Disable with --no-default-features for embedded builds.
 desktop = [
+    "dep:hrafn-sdk",
     "dep:clap", "dep:clap_complete",
     "dep:dialoguer", "dep:console",
     "gateway",
