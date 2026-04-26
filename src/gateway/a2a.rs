@@ -373,14 +373,15 @@ pub struct TaskStatusUpdateEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_id: Option<String>,
     pub status: TaskStatus,
-    #[serde(rename = "final")]
-    pub is_final: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
 }
 
 /// A2A v1.0 `TaskArtifactUpdateEvent` — emitted during streaming to deliver
 /// artifact content (potentially chunked).
+///
+/// `append` and `last_chunk` are top-level fields per the v1.0 proto
+/// (`TaskArtifactUpdateEvent.append` / `.last_chunk`), not artifact metadata.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskArtifactUpdateEvent {
@@ -388,6 +389,10 @@ pub struct TaskArtifactUpdateEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_id: Option<String>,
     pub artifact: Artifact,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub append: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub last_chunk: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
 }
@@ -401,12 +406,12 @@ pub fn generate_agent_card(config: &crate::config::Config) -> serde_json::Value 
     let name = a2a
         .agent_name
         .clone()
-        .unwrap_or_else(|| "ZeroClaw Agent".to_string());
+        .unwrap_or_else(|| "Hrafn Agent".to_string());
 
     let description = a2a
         .description
         .clone()
-        .unwrap_or_else(|| "ZeroClaw autonomous agent".to_string());
+        .unwrap_or_else(|| "Hrafn autonomous agent".to_string());
 
     let version = a2a
         .version
@@ -459,10 +464,10 @@ pub fn generate_agent_card(config: &crate::config::Config) -> serde_json::Value 
         "name": name,
         "description": description,
         "version": version,
-        "supported_interfaces": [{
+        "supportedInterfaces": [{
             "url": format!("{base_url}/"),
-            "protocol_binding": "JSONRPC",
-            "protocol_version": protocol_version
+            "protocolBinding": "JSONRPC",
+            "protocolVersion": protocol_version
         }],
         "capabilities": {
             "streaming": true,
@@ -472,20 +477,20 @@ pub fn generate_agent_card(config: &crate::config::Config) -> serde_json::Value 
         "defaultOutputModes": ["text/plain"],
         "skills": skills,
         "provider": {
-            "organization": "ZeroClaw",
+            "organization": "Hrafn",
             "url": provider_url
         }
     });
 
     if requires_auth {
-        card["security_schemes"] = json!({
+        card["securitySchemes"] = json!({
             "bearer": {
-                "http_auth_security_scheme": {
+                "httpAuthSecurityScheme": {
                     "scheme": "Bearer"
                 }
             }
         });
-        card["security_requirements"] = json!([{
+        card["securityRequirements"] = json!([{
             "schemes": {
                 "bearer": { "list": [] }
             }
@@ -1165,6 +1170,10 @@ async fn handle_tasks_list(
         })
         .collect();
 
+    // v1.0 ListTasksResponse.total_size: count of tasks matching query filters
+    // (contextId/status/statusTimestampAfter), before page_token/page_size pagination.
+    let total_size = filtered.len();
+
     // Apply cursor: skip tasks up to and including page_token
     let after_cursor: Vec<&Task> = if let Some(ref token) = page_token {
         let mut found = false;
@@ -1217,6 +1226,7 @@ async fn handle_tasks_list(
     let mut result = json!({
         "tasks": result_tasks,
         "pageSize": page_size,
+        "totalSize": total_size,
     });
     if let Some(token) = next_page_token {
         result["nextPageToken"] = json!(token);
@@ -1370,14 +1380,20 @@ pub async fn handle_tasks_get_rest(
 /// `POST /tasks/{id}:cancel` — v1.0 REST binding for CancelTask.
 /// The route captures the full `{id}:cancel` segment; the `:cancel` suffix
 /// is stripped at runtime because axum does not support `{param}:suffix` patterns.
+///
+/// Requests to `POST /tasks/{id}` without the `:cancel` suffix return 404 —
+/// only the suffixed form is a valid cancel route per the A2A spec.
 pub async fn handle_tasks_cancel_rest(
     State(state): State<AppState>,
     headers: HeaderMap,
     axum::extract::Path(raw): axum::extract::Path<String>,
 ) -> impl IntoResponse {
     // A2A spec uses gRPC-style `/tasks/{id}:cancel` but axum captures
-    // the full segment including the `:cancel` suffix.
-    let task_id = raw.strip_suffix(":cancel").unwrap_or(&raw).to_string();
+    // the full segment including the `:cancel` suffix. Reject requests
+    // that lack the suffix so `POST /tasks/{id}` does not silently cancel.
+    let Some(task_id) = raw.strip_suffix(":cancel").map(str::to_owned) else {
+        return (StatusCode::NOT_FOUND, Json(json!({"error": "Not Found"}))).into_response();
+    };
     let (Some(_card), Some(task_store)) = (&state.a2a_agent_card, &state.a2a_task_store) else {
         return (
             StatusCode::NOT_FOUND,
@@ -1611,7 +1627,6 @@ pub async fn handle_message_stream_rest(
                     message: None,
                     timestamp: Some(chrono::Utc::now().to_rfc3339()),
                 },
-                is_final: false,
                 metadata: None,
             };
             emit!(
@@ -1652,7 +1667,6 @@ pub async fn handle_message_stream_rest(
                         task_id: tid.clone(),
                         context_id: Some(ctx.clone()),
                         status: fail_status.clone(),
-                        is_final: true,
                         metadata: None,
                     };
                     emit!(
@@ -1693,6 +1707,10 @@ pub async fn handle_message_stream_rest(
                         acc_clone.write().await.push_str(&delta);
                         chunk_index += 1;
 
+                        // Per A2A v1.0: `append` is a top-level event field.
+                        // First chunk: append=false (replaces any prior artifact state);
+                        // subsequent chunks: append=true. `last_chunk` is emitted with
+                        // the terminal artifact event after streaming completes.
                         let artifact_event = TaskArtifactUpdateEvent {
                             task_id: tid.clone(),
                             context_id: Some(ctx.clone()),
@@ -1704,12 +1722,11 @@ pub async fn handle_message_stream_rest(
                                     text: delta,
                                     metadata: None,
                                 }],
-                                metadata: Some(json!({
-                                    "append": true,
-                                    "chunkIndex": chunk_index,
-                                })),
+                                metadata: Some(json!({"chunkIndex": chunk_index})),
                                 extensions: None,
                             },
+                            append: chunk_index > 1,
+                            last_chunk: false,
                             metadata: None,
                         };
                         emit!(
@@ -1727,7 +1744,6 @@ pub async fn handle_message_stream_rest(
                                 message: None,
                                 timestamp: Some(chrono::Utc::now().to_rfc3339()),
                             },
-                            is_final: false,
                             metadata: Some(json!({"thinking": delta})),
                         };
                         emit!(
@@ -1745,7 +1761,6 @@ pub async fn handle_message_stream_rest(
                                 message: None,
                                 timestamp: Some(chrono::Utc::now().to_rfc3339()),
                             },
-                            is_final: false,
                             metadata: Some(json!({"toolCall": {"name": name, "args": args}})),
                         };
                         emit!(
@@ -1763,7 +1778,6 @@ pub async fn handle_message_stream_rest(
                                 message: None,
                                 timestamp: Some(chrono::Utc::now().to_rfc3339()),
                             },
-                            is_final: false,
                             metadata: Some(json!({"toolResult": {"name": name, "output": output}})),
                         };
                         emit!(
@@ -1867,6 +1881,35 @@ pub async fn handle_message_stream_rest(
                 task_store.mark_terminal(&tid).await;
             }
 
+            // If any artifact chunks were streamed and the task completed,
+            // emit a terminal artifact_update with `last_chunk=true` so clients
+            // know the chunk stream is done. Empty payload — content already
+            // accumulated via previous chunks. Per v1.0 proto.
+            if chunk_index > 0 && final_state == A2aTaskState::Completed {
+                let last_chunk_event = TaskArtifactUpdateEvent {
+                    task_id: tid.clone(),
+                    context_id: Some(ctx.clone()),
+                    artifact: Artifact {
+                        artifact_id: artifact_id.clone(),
+                        name: Some("response".to_string()),
+                        description: None,
+                        parts: vec![],
+                        metadata: None,
+                        extensions: None,
+                    },
+                    append: true,
+                    last_chunk: true,
+                    metadata: None,
+                };
+                let _ = sse_tx
+                    .send(
+                        Event::default()
+                            .event("artifact_update")
+                            .data(serde_json::to_string(&last_chunk_event).unwrap_or_default()),
+                    )
+                    .await;
+            }
+
             // Emit final status_update (best-effort — client may be gone)
             let final_event = TaskStatusUpdateEvent {
                 task_id: tid.clone(),
@@ -1876,7 +1919,6 @@ pub async fn handle_message_stream_rest(
                     message: Some(final_message),
                     timestamp: Some(chrono::Utc::now().to_rfc3339()),
                 },
-                is_final: true,
                 metadata: None,
             };
             let _ = sse_tx
@@ -2254,18 +2296,18 @@ mod tests {
         };
 
         let card = generate_agent_card(&config);
-        assert_eq!(card["name"], "ZeroClaw Agent");
-        // v1.0: supported_interfaces replaces top-level url
-        let ifaces = card["supported_interfaces"].as_array().unwrap();
+        assert_eq!(card["name"], "Hrafn Agent");
+        // v1.0: supportedInterfaces replaces top-level url
+        let ifaces = card["supportedInterfaces"].as_array().unwrap();
         assert_eq!(ifaces.len(), 1);
         assert!(ifaces[0]["url"].as_str().unwrap().starts_with("http://"));
-        assert_eq!(ifaces[0]["protocol_binding"], "JSONRPC");
-        assert_eq!(ifaces[0]["protocol_version"], "1.0");
+        assert_eq!(ifaces[0]["protocolBinding"], "JSONRPC");
+        assert_eq!(ifaces[0]["protocolVersion"], "1.0");
         assert!(card["capabilities"].is_object());
         assert_eq!(card["capabilities"]["streaming"], true);
-        // v1.0: security_schemes replaces authentication
-        assert!(card["security_schemes"]["bearer"].is_object());
-        assert!(card["security_requirements"].is_array());
+        // v1.0: securitySchemes replaces authentication
+        assert!(card["securitySchemes"]["bearer"].is_object());
+        assert!(card["securityRequirements"].is_array());
         // v1.0: MIME types instead of bare "text"
         assert_eq!(card["defaultInputModes"][0], "text/plain");
         assert_eq!(card["defaultOutputModes"][0], "text/plain");
@@ -2296,8 +2338,8 @@ mod tests {
         let card = generate_agent_card(&config);
         assert_eq!(card["name"], "my-agent");
         assert_eq!(card["description"], "My custom agent");
-        // v1.0: URL is in supported_interfaces
-        let ifaces = card["supported_interfaces"].as_array().unwrap();
+        // v1.0: URL is in supportedInterfaces
+        let ifaces = card["supportedInterfaces"].as_array().unwrap();
         assert!(
             ifaces[0]["url"]
                 .as_str()
@@ -2457,7 +2499,7 @@ mod tests {
         let resp = handle_agent_card(State(state)).await.into_response();
         assert_eq!(resp.status(), StatusCode::OK);
         let body = response_json(resp).await;
-        assert_eq!(body["name"], "ZeroClaw Agent");
+        assert_eq!(body["name"], "Hrafn Agent");
         assert!(body["skills"].is_array());
     }
 
@@ -2833,6 +2875,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancel_rest_accepts_suffixed_path() {
+        let state = a2a_test_state(None, false, &[]);
+        let task_store = state.a2a_task_store.as_ref().unwrap();
+        {
+            let mut tasks = task_store.tasks.write().await;
+            tasks.insert(
+                "abc123".into(),
+                Task {
+                    id: "abc123".into(),
+                    status: TaskStatus {
+                        state: A2aTaskState::Working,
+                        message: None,
+                        timestamp: None,
+                    },
+                    context_id: None,
+                    artifacts: None,
+                    history: None,
+                    metadata: None,
+                },
+            );
+        }
+        let resp = handle_tasks_cancel_rest(
+            State(state),
+            HeaderMap::new(),
+            axum::extract::Path("abc123:cancel".to_string()),
+        )
+        .await
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = response_json(resp).await;
+        assert_eq!(body["status"]["state"], "TASK_STATE_CANCELED");
+    }
+
+    #[tokio::test]
+    async fn cancel_rest_rejects_unsuffixed_path() {
+        let state = a2a_test_state(None, false, &[]);
+        let task_store = state.a2a_task_store.as_ref().unwrap();
+        {
+            let mut tasks = task_store.tasks.write().await;
+            tasks.insert(
+                "abc123".into(),
+                Task {
+                    id: "abc123".into(),
+                    status: TaskStatus {
+                        state: A2aTaskState::Working,
+                        message: None,
+                        timestamp: None,
+                    },
+                    context_id: None,
+                    artifacts: None,
+                    history: None,
+                    metadata: None,
+                },
+            );
+        }
+        // POST /tasks/abc123 (no :cancel suffix) must NOT cancel the task.
+        let resp = handle_tasks_cancel_rest(
+            State(state.clone()),
+            HeaderMap::new(),
+            axum::extract::Path("abc123".to_string()),
+        )
+        .await
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        // Task must still be Working.
+        let tasks = task_store.tasks.read().await;
+        let t = tasks.get("abc123").unwrap();
+        assert_eq!(t.status.state, A2aTaskState::Working);
+    }
+
+    #[tokio::test]
     async fn task_store_capacity_limit_enforced() {
         let store = TaskStore::new();
         {
@@ -3123,14 +3237,14 @@ mod tests {
                 message: None,
                 timestamp: Some("2026-01-01T00:00:00Z".into()),
             },
-            is_final: false,
             metadata: None,
         };
         let json = serde_json::to_value(&status_event).unwrap();
         assert_eq!(json["taskId"], "t-1");
         assert_eq!(json["contextId"], "ctx-1");
         assert_eq!(json["status"]["state"], "TASK_STATE_WORKING");
-        assert_eq!(json["final"], false);
+        // v1.0: no `final` field on TaskStatusUpdateEvent
+        assert!(json.get("final").is_none());
 
         let artifact_event = TaskArtifactUpdateEvent {
             task_id: "t-1".into(),
@@ -3143,16 +3257,40 @@ mod tests {
                     text: "chunk".into(),
                     metadata: None,
                 }],
-                metadata: Some(json!({"append": true, "chunkIndex": 1})),
+                metadata: Some(json!({"chunkIndex": 1})),
                 extensions: None,
             },
+            append: true,
+            last_chunk: false,
             metadata: None,
         };
         let json = serde_json::to_value(&artifact_event).unwrap();
         assert_eq!(json["taskId"], "t-1");
         assert_eq!(json["artifact"]["artifactId"], "a-1");
         assert_eq!(json["artifact"]["parts"][0]["text"], "chunk");
-        assert!(json["artifact"]["metadata"]["append"].as_bool().unwrap());
+        // v1.0: `append` is a top-level event field, not artifact metadata.
+        assert_eq!(json["append"], true);
+        // `lastChunk` defaults to false and is skipped when false.
+        assert!(json.get("lastChunk").is_none());
+
+        // Terminal chunk: last_chunk=true is serialized as `lastChunk`.
+        let terminal = TaskArtifactUpdateEvent {
+            task_id: "t-1".into(),
+            context_id: None,
+            artifact: Artifact {
+                artifact_id: "a-1".into(),
+                name: None,
+                description: None,
+                parts: vec![],
+                metadata: None,
+                extensions: None,
+            },
+            append: true,
+            last_chunk: true,
+            metadata: None,
+        };
+        let json = serde_json::to_value(&terminal).unwrap();
+        assert_eq!(json["lastChunk"], true);
     }
 
     // ── ListTasks tests ─────────────────────────────────────────
@@ -3221,7 +3359,34 @@ mod tests {
         let result = &body["result"];
         assert_eq!(result["tasks"].as_array().unwrap().len(), 0);
         assert_eq!(result["pageSize"], 50);
+        assert_eq!(result["totalSize"], 0);
         assert!(result.get("nextPageToken").is_none() || result["nextPageToken"].is_null());
+    }
+
+    #[tokio::test]
+    async fn tasks_list_reports_total_size_across_pagination() {
+        let store = Arc::new(TaskStore::new());
+        {
+            let mut tasks = store.tasks.write().await;
+            for i in 0..7 {
+                let id = format!("t-{i:02}");
+                tasks.insert(id.clone(), make_task(&id, A2aTaskState::Completed, None));
+            }
+        }
+
+        // With pageSize=2, first page should still report totalSize=7.
+        let req = list_rpc(json!({"pageSize": 2}));
+        let (_, Json(body)) = handle_tasks_list(&store, req).await;
+        let result = &body["result"];
+        assert_eq!(result["tasks"].as_array().unwrap().len(), 2);
+        assert_eq!(result["totalSize"], 7);
+
+        // totalSize reflects post-filter cardinality (before pagination).
+        let req = list_rpc(json!({"status": "TASK_STATE_FAILED"}));
+        let (_, Json(body)) = handle_tasks_list(&store, req).await;
+        let result = &body["result"];
+        assert_eq!(result["tasks"].as_array().unwrap().len(), 0);
+        assert_eq!(result["totalSize"], 0);
     }
 
     #[tokio::test]

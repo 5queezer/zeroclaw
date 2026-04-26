@@ -32,6 +32,20 @@ Fix:
 ./install.sh --install-system-deps
 ```
 
+Full desktop builds that enable MQTT use `rumqttc` with native TLS so the
+workspace avoids known `rustls-webpki` audit findings in the older MQTT TLS
+stack. On Linux, that path requires OpenSSL development headers and
+`pkg-config`:
+
+```bash
+sudo apt-get install -y pkg-config libssl-dev
+```
+
+Native TLS also delegates certificate validation to the platform TLS stack
+(OpenSSL on Linux, SChannel on Windows, Secure Transport on macOS). Brokers with
+non-standard or private certificate chains can therefore behave differently than
+the prior rustls-backed MQTT configuration.
+
 ### Build fails on low-RAM / low-disk hosts
 
 Symptoms:

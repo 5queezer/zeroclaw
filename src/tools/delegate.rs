@@ -565,7 +565,7 @@ impl DelegateTool {
             Err(e) => Ok(ToolResult {
                 success: false,
                 output: String::new(),
-                error: Some(format!("Agent '{agent_name}' failed: {e}",)),
+                error: Some(format!("Agent '{agent_name}' failed: {e}")),
             }),
         }
     }

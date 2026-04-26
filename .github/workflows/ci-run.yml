@@ -44,7 +44,8 @@ jobs:
   bench-compile:
     name: Verify Benchmarks Compile
     runs-on: ubuntu-latest
-    # Benchmark compile can finish close to 15m on cold caches; keep cleanup/logging from being cancelled.
+    # This job routinely finishes just under 15 minutes on cold PR runners;
+    # leave cleanup/logging headroom so successful compiles are not cancelled.
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
